@@ -1,6 +1,6 @@
 dataset_id: imagenet1k
 prefix_uri: s3://imagenet1k-sdl
-split: train
+split: val
 dataset_format: image_folder
 transform_name: imagenet_train
 

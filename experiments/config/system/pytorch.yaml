@@ -4,5 +4,5 @@ cost:
   pricing: aws
   resource_profile: training_only
 
-num_workers: 8
+num_workers: 1
 persistent_workers: true
