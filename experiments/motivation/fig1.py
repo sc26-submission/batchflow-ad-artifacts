@@ -185,11 +185,11 @@ def configure_plot_style():
     plt.rcParams.update({
         "font.family": "serif",
 
-        "font.serif": [
-            "Linux Libertine",
-            "Libertine",
-            "Times",
-        ],
+        # "font.serif": [
+        #     "Linux Libertine",
+        #     "Libertine",
+        #     "Times",
+        # ],
 
         "font.size": 7.5,
 
