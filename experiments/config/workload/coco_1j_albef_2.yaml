@@ -1,0 +1,17 @@
+name: coco_1j_albef_2
+dataset: coco
+results_dir: exp_results
+
+job_defaults:
+  task: retrieval
+  num_steps: 100
+  warmup_steps: 5
+  learning_rate: 0.00001
+  weight_decay: 0.02
+  alpha: 0.4
+  device: cuda
+  use_amp: true
+
+jobs:
+  - name: albef_vision_2
+    model_name: albef_vision_2

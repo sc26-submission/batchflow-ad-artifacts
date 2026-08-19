@@ -1,0 +1,7 @@
+enabled: true
+stage: disaggregation
+label: + Disaggregation
+order: 1
+deployment: aws_disaggregated
+policy: static
+cost_resource_profile: disaggregated

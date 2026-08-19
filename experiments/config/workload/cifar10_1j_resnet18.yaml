@@ -1,0 +1,14 @@
+name: cifar10_1j_resnet18
+dataset: cifar10
+results_dir: exp_results
+
+job_defaults:
+  num_steps: 100
+  warmup_steps: 5
+  learning_rate: 0.001
+  device: cpu
+  use_amp: true
+
+jobs:
+  - name: resnet18
+    model_name: resnet18

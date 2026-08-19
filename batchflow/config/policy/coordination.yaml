@@ -1,0 +1,7 @@
+# Ablation stage: dynamic shared-worker allocation without cross-job reuse.
+scheduling_strategy: adaptive
+worker_assignment_mode: shared
+static_job_count: 4
+share_batches_across_jobs: false
+cache_enabled: false
+opportunistic_prefetch_enabled: false

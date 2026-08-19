@@ -1,0 +1,14 @@
+dataset_id: synthetic-torch
+prefix_uri: memory://synthetic-torch
+split: train
+dataset_format: synthetic_torch
+transform_name: null
+
+num_samples: 256
+batch_size: 32
+drop_last: false
+shuffle: false
+seed: 123
+
+input_shape: [3, 32, 32]
+num_classes: 10

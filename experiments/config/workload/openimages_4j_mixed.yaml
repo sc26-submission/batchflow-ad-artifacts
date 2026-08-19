@@ -1,0 +1,23 @@
+name: openimages_4j_mixed
+dataset: openimages
+results_dir: exp_results
+
+job_defaults:
+  num_steps: 100
+  warmup_steps: 5
+  learning_rate: 0.1
+  device: cuda
+  use_amp: true
+
+jobs:
+  - name: vit_b_32
+    model_name: vit_b_32
+
+  - name: vit_small_patch32_224
+    model_name: vit_small_patch32_224
+
+  - name: levit_128
+    model_name: levit_128
+
+  - name: mixer_b32_224
+    model_name: mixer_b32_224

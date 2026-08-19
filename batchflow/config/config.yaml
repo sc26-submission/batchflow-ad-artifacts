@@ -1,0 +1,27 @@
+defaults:
+  - _self_
+  - dataset: imagenet
+  - deployment: colocated
+  - policy: full
+  - override hydra/hydra_logging: disabled
+  - override hydra/job_logging: disabled
+
+# all: coordinator + workers on this machine
+# coordinator: coordinator only
+# worker: workers for worker_host_id only
+role: all
+worker_host_id: null
+
+logging:
+  level: INFO
+
+hydra:
+  run:
+    dir: .
+  sweep:
+    dir: .
+  output_subdir: null
+  job_logging:
+    level: DISABLE
+  hydra_logging:
+    level: DISABLE

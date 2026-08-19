@@ -1,0 +1,20 @@
+name: coordl
+
+cost:
+  pricing: aws
+  resource_profile: training_only
+
+num_workers: 4
+persistent_workers: true
+staging_window_per_owner: 1
+poll_interval_seconds: 0.01
+wait_timeout_seconds: 120.0
+startup_timeout_seconds: 120.0
+
+# Local short-lived staging service used by the coordinated-preprocessing
+redis:
+  host: 127.0.0.1
+  port: 6379
+  db: 0
+  ssl: false
+  password: ""

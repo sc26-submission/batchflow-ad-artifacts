@@ -1,0 +1,12 @@
+dataset_id: cifar10
+prefix_uri: s3://cifar10-bf
+split: train
+dataset_format: image_folder
+transform_name: cifar10_train
+
+num_samples: 0
+batch_size: 64
+drop_last: false
+shuffle: true
+seed: 123
+num_classes: 10

@@ -1,0 +1,8 @@
+name: pytorch
+
+cost:
+  pricing: aws
+  resource_profile: training_only
+
+num_workers: 8
+persistent_workers: true

@@ -1,0 +1,12 @@
+name: batchflow
+runner: batchflow
+
+cost:
+  pricing: aws
+  resource_profile: disaggregated_cached
+
+# trainer-side client used by the experiment processes.
+client:
+  coordinator_address: 127.0.0.1:50051
+  pin_memory: true
+  log_trainer_waits: false

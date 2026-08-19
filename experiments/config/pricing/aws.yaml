@@ -1,0 +1,21 @@
+name: aws
+region: us-east-1
+currency: USD
+
+hourly_usd:
+  p3.8xlarge: 12.24
+  c5.12xlarge: 2.04
+  cache.m5.4xlarge: 1.245
+
+resource_profiles:
+  training_only:
+    p3.8xlarge: 1
+
+  disaggregated:
+    p3.8xlarge: 1
+    c5.12xlarge: 1
+
+  disaggregated_cached:
+    p3.8xlarge: 1
+    c5.12xlarge: 1
+    cache.m5.4xlarge: 1

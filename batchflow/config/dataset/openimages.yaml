@@ -1,0 +1,21 @@
+dataset_id: openimages
+prefix_uri: s3://open-images-bf
+split: train
+dataset_format: openimages_boxable
+transform_name: openimages_train
+
+# Flat images live at s3://open-images-bf/train/<ImageID>.jpg.
+# Upload these annotation files once under s3://open-images-bf/annotations/.
+annotations_uri: s3://open-images-bf/annotations/train-annotations-human-imagelabels-boxable.csv
+class_descriptions_uri: s3://open-images-bf/annotations/class-descriptions-boxable.csv
+
+# Discovered from the Open Images annotation manifest.
+num_samples: 0
+num_classes: 0
+
+input_shape: [3, 224, 224]
+
+batch_size: 128
+drop_last: false
+shuffle: true
+seed: 123

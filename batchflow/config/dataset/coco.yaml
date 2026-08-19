@@ -1,0 +1,25 @@
+dataset_id: coco
+
+# Common COCO image root. The ALBEF Karpathy training split references images
+# from both train2014/ and val2014/, so keep both directories below this root.
+prefix_uri: s3://YOUR_BUCKET/coco
+
+# ALBEF's provided COCO retrieval training annotations (Karpathy split).
+annotations_uri: s3://YOUR_BUCKET/coco/annotations/coco_train.json
+
+split: train
+dataset_format: coco_retrieval
+transform_name: albef_train_384
+text_transform_name: albef_text_30
+
+# Discovered from coco_train.json.
+num_samples: 0
+num_classes: 0
+
+# BatchFlow paper W3 setting.
+input_shape: [3, 384, 384]
+
+batch_size: 64
+drop_last: true
+shuffle: true
+seed: 123

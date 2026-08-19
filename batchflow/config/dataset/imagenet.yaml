@@ -1,0 +1,14 @@
+dataset_id: imagenet1k
+prefix_uri: s3://imagenet1k-sdl
+split: train
+dataset_format: image_folder
+transform_name: imagenet_train
+
+num_samples: 0
+input_shape: [3, 224, 224]
+
+batch_size: 128
+drop_last: false
+shuffle: true
+seed: 123
+num_classes: 1000

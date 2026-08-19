@@ -1,0 +1,32 @@
+# Two-machine AWS topology used by the paper experiments.
+# Replace the private addresses and ElastiCache endpoint for your deployment.
+# BatchFlow behavior is selected independently with policy=<name>.
+mode: disaggregated
+
+coordinator:
+  host: 0.0.0.0
+  advertised_host: 10.0.1.10
+  port: 50051
+
+# This endpoint is used only when the selected policy enables caching.
+redis:
+  enabled: true
+  host: your-cache.xxxxxx.cache.amazonaws.com
+  port: 6379
+  db: 0
+  ssl: false
+  password: ""
+  key_prefix: batchflow
+
+worker_hosts:
+  - id: training-node
+    hostname: 10.0.1.10
+    worker_count: 24
+    worker_port_start: 60061
+
+  - id: data-node
+    hostname: 10.0.2.10
+    worker_count: 24
+    worker_port_start: 61061
+
+startup_timeout_seconds: 60.0

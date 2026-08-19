@@ -1,0 +1,14 @@
+name: openimages_1j_vit_b_32
+dataset: openimages
+results_dir: exp_results
+
+job_defaults:
+  num_steps: 100
+  warmup_steps: 5
+  learning_rate: 0.1
+  device: cuda
+  use_amp: true
+
+jobs:
+  - name: vit_b_32
+    model_name: vit_b_32

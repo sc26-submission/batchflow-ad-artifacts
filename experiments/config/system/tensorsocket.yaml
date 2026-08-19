@@ -1,0 +1,16 @@
+name: tensorsocket
+
+cost:
+  pricing: aws
+  resource_profile: training_only
+
+num_workers: 8
+persistent_workers: true
+
+host: 127.0.0.1
+port: 5555
+control_port: 5556
+consumer_buffer_size: 10
+max_lag_batches: 64
+startup_timeout_seconds: 600.0
+receive_timeout_seconds: 120.0

@@ -1,0 +1,16 @@
+# Single-machine topology used by the colocated paper configuration.
+# BatchFlow behavior is selected independently with policy=<name>.
+mode: co-located
+
+coordinator:
+  host: 127.0.0.1
+  port: 50051
+
+redis:
+  enabled: false
+
+worker_hosts:
+  - id: training-node
+    hostname: 127.0.0.1
+    worker_count: 24
+    worker_port_start: 60061

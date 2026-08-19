@@ -1,0 +1,7 @@
+enabled: true
+stage: coordination
+label: + Coordination
+order: 2
+deployment: aws_disaggregated
+policy: coordination
+cost_resource_profile: disaggregated
