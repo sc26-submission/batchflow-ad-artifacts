@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - system: batchflow
+  - system: pytorch
   - workload: imagenet_1j_resnet18
   - ablation: none
   - override hydra/hydra_logging: disabled
