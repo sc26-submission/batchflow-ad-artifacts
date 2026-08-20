@@ -1,0 +1,21 @@
+nodes:
+  node-0:
+    host: 10.0.1.24
+    worker_count: 8
+    worker_port_start: 60061
+
+  node-1:
+    host: 10.0.2.31
+    worker_count: 24
+    worker_port_start: 61061
+
+coordinator:
+  node: node-0
+  port: 50051
+
+redis:
+  host: batchflow-cache.xxxxxx.cache.amazonaws.com
+  port: 6379
+  ssl: false
+
+startup_timeout_seconds: 60.0

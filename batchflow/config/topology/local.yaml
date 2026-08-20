@@ -1,0 +1,17 @@
+# config/topology/local.yaml
+nodes:
+  local:
+    host: 127.0.0.1
+    worker_count: 4
+    worker_port_start: 60061
+
+coordinator:
+  node: local
+  port: 50051
+
+redis:
+  host: 127.0.0.1
+  port: 6379
+  ssl: false
+
+startup_timeout_seconds: 30.0

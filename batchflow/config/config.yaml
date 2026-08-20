@@ -1,16 +1,13 @@
 defaults:
   - _self_
   - dataset: cifar10
-  - deployment: colocated
+  - topology: local
   - policy: full
   - override hydra/hydra_logging: disabled
   - override hydra/job_logging: disabled
 
-# all: coordinator + workers on this machine
-# coordinator: coordinator only
-# worker: workers for worker_host_id only
-role: all
-worker_host_id: null
+# Which node in the selected topology this process should launch.
+node_id: local
 
 logging:
   dir: batchflow/logs

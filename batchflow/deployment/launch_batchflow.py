@@ -16,13 +16,17 @@ from batchflow.common.core import Dataset
 from batchflow.config.config_types import (
     CoordinatorConfig,
     DatasetConfig,
-    DeploymentConfig,
+    NodeConfig,
     RedisConfig,
+    SchedulerConfig,
+    TopologyConfig,
     WorkerConfig,
-    WorkerHostConfig,
+    coordinator_runtime_config,
     make_worker_config,
     parse_dataset_config,
-    parse_deployment_config,
+    parse_scheduler_config,
+    parse_topology_config,
+    runtime_redis_config,
 )
 from batchflow.coordinator.dataset_builder import build_dataset_from_config
 from batchflow.coordinator.grpc_service import serve_grpc
@@ -33,12 +37,6 @@ from batchflow.data_worker.data_worker import DataWorker
 LOGGER = logging.getLogger("batchflow.launch")
 
 
-ROLE_ALL = "all"
-ROLE_COORDINATOR = "coordinator"
-ROLE_WORKER = "worker"
-VALID_ROLES = {ROLE_ALL, ROLE_COORDINATOR, ROLE_WORKER}
-
-
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -47,7 +45,6 @@ VALID_ROLES = {ROLE_ALL, ROLE_COORDINATOR, ROLE_WORKER}
 def _log_level(level: str | int) -> int:
     if isinstance(level, int):
         return level
-
     return getattr(logging, str(level).upper(), logging.INFO)
 
 
@@ -55,10 +52,7 @@ def _reenable_batchflow_loggers(log_level: int) -> None:
     logging.disable(logging.NOTSET)
 
     for name, logger_obj in logging.Logger.manager.loggerDict.items():
-        if not name.startswith("batchflow"):
-            continue
-
-        if isinstance(logger_obj, logging.Logger):
+        if name.startswith("batchflow") and isinstance(logger_obj, logging.Logger):
             logger_obj.disabled = False
             logger_obj.setLevel(log_level)
             logger_obj.propagate = True
@@ -69,24 +63,15 @@ def _reenable_batchflow_loggers(log_level: int) -> None:
     batchflow_logger.propagate = True
 
 
-def setup_logging(
-    base_dir: str | Path = "logs",
-    level: str | int = "INFO",
-) -> Path:
-    
-    run_dir = Path(base_dir).resolve()
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    log_file = run_dir / "batchflow.log"
+def _configure_logging(log_file: Path, level: str | int) -> None:
     log_level = _log_level(level)
+    formatter = logging.Formatter(
+        "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+    )
 
     root_logger = logging.getLogger()
     root_logger.handlers.clear()
     root_logger.setLevel(log_level)
-
-    formatter = logging.Formatter(
-        "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
-    )
 
     stream_handler = logging.StreamHandler()
     stream_handler.setLevel(log_level)
@@ -101,8 +86,18 @@ def setup_logging(
 
     _reenable_batchflow_loggers(log_level)
 
-    LOGGER.info("Logging initialized log_file=%s level=%s", log_file, level)
 
+def setup_logging(
+    base_dir: str | Path = "logs",
+    level: str | int = "INFO",
+) -> Path:
+    run_dir = Path(base_dir).resolve()
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    log_file = run_dir / "batchflow.log"
+    _configure_logging(log_file, level)
+
+    LOGGER.info(f"Logging initialized | file={log_file} | level={level}")
     return run_dir
 
 
@@ -115,34 +110,11 @@ def setup_worker_logging(
     run_dir.mkdir(parents=True, exist_ok=True)
 
     log_file = run_dir / f"worker-{worker_id}.log"
-    log_level = _log_level(level)
-
-    root_logger = logging.getLogger()
-    root_logger.handlers.clear()
-    root_logger.setLevel(log_level)
-
-    formatter = logging.Formatter(
-        "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
-    )
-
-    stream_handler = logging.StreamHandler()
-    stream_handler.setLevel(log_level)
-    stream_handler.setFormatter(formatter)
-
-    file_handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
-    file_handler.setLevel(log_level)
-    file_handler.setFormatter(formatter)
-
-    root_logger.addHandler(stream_handler)
-    root_logger.addHandler(file_handler)
-
-    _reenable_batchflow_loggers(log_level)
+    _configure_logging(log_file, level)
 
     logging.getLogger("batchflow.worker_process").info(
-        "Worker logging initialized worker_id=%s log_file=%s level=%s",
-        worker_id,
-        log_file,
-        level,
+        f"Worker logging initialized | worker={worker_id} | "
+        f"file={log_file} | level={level}"
     )
 
 
@@ -184,7 +156,7 @@ class ManagedProcessHandle:
             return
 
         self._stopped = True
-        LOGGER.info("Stopping worker %s", self.name)
+        LOGGER.info(f"Stopping worker {self.name}")
 
         if self.process.is_alive():
             self.process.terminate()
@@ -192,19 +164,17 @@ class ManagedProcessHandle:
         self.process.join(timeout=5.0)
 
         if self.process.is_alive():
-            LOGGER.warning("Worker did not stop cleanly, killing %s", self.name)
+            LOGGER.warning(f"Worker did not stop cleanly, killing {self.name}")
             self.process.kill()
             self.process.join(timeout=5.0)
 
         LOGGER.info(
-            "Worker stopped name=%s exitcode=%s",
-            self.name,
-            self.process.exitcode,
+            f"Worker stopped | name={self.name} | exitcode={self.process.exitcode}"
         )
 
 
 # ---------------------------------------------------------------------------
-# Dataset setup
+# Dataset
 # ---------------------------------------------------------------------------
 
 
@@ -212,15 +182,15 @@ def build_registered_dataset_from_config(
     dataset_config: DatasetConfig,
     force_rebuild: bool = False,
 ) -> Dataset:
-    LOGGER.info("Preparing dataset %s", dataset_config.dataset_id)
-    LOGGER.info("  source:     %s", dataset_config.prefix_uri)
-    LOGGER.info("  split:      %s", dataset_config.split)
-    LOGGER.info("  format:     %s", dataset_config.dataset_format)
-    LOGGER.info("  transform:  %s", dataset_config.transform_name)
-    LOGGER.info("  batch size: %s", dataset_config.batch_size)
-    LOGGER.info("  drop last:  %s", dataset_config.drop_last)
-    LOGGER.info("  shuffle:    %s", dataset_config.shuffle)
-    LOGGER.info("  seed:       %s", dataset_config.seed)
+    LOGGER.info(f"Preparing dataset {dataset_config.dataset_id}")
+    LOGGER.info(f"  source:     {dataset_config.prefix_uri}")
+    LOGGER.info(f"  split:      {dataset_config.split}")
+    LOGGER.info(f"  format:     {dataset_config.dataset_format}")
+    LOGGER.info(f"  transform:  {dataset_config.transform_name}")
+    LOGGER.info(f"  batch size: {dataset_config.batch_size}")
+    LOGGER.info(f"  drop last:  {dataset_config.drop_last}")
+    LOGGER.info(f"  shuffle:    {dataset_config.shuffle}")
+    LOGGER.info(f"  seed:       {dataset_config.seed}")
 
     return build_dataset_from_config(
         dataset_config,
@@ -229,7 +199,7 @@ def build_registered_dataset_from_config(
 
 
 # ---------------------------------------------------------------------------
-# Coordinator launch
+# Coordinator
 # ---------------------------------------------------------------------------
 
 
@@ -239,27 +209,30 @@ def start_coordinator(
     redis_config: RedisConfig,
 ) -> LocalCoordinatorHandle:
     LOGGER.info("Starting coordinator")
-    LOGGER.info("  bind address:       %s", coordinator_config.bind_addr)
-    LOGGER.info("  advertised address: %s", coordinator_config.addr)
-    LOGGER.info("  grpc max workers:   %s", coordinator_config.grpc_max_workers)
+    LOGGER.info(f"  bind address:      0.0.0.0:{coordinator_config.port}")
+    LOGGER.info(f"  grpc max workers:  {coordinator_config.grpc_max_workers}")
+    LOGGER.info(f"  scheduler:         {coordinator_config.scheduler.scheduling_strategy}")
     LOGGER.info(
-        "  scheduler:          %s",
-        coordinator_config.scheduler.scheduling_strategy,
+        f"  worker assignment: {coordinator_config.scheduler.worker_assignment_mode}"
     )
     LOGGER.info(
-        "  worker assignment:  %s",
-        coordinator_config.scheduler.worker_assignment_mode,
+        "  cross-job batches: "
+        + (
+            "shared"
+            if coordinator_config.scheduler.share_batches_across_jobs
+            else "private"
+        )
     )
     LOGGER.info(
-        "  cross-job batches:  %s",
-        "shared"
-        if coordinator_config.scheduler.share_batches_across_jobs
-        else "private",
+        "  reusable cache:    "
+        + ("enabled" if coordinator_config.scheduler.cache_enabled else "disabled")
     )
-    LOGGER.info(
-        "  reusable cache:     %s",
-        "enabled" if coordinator_config.scheduler.cache_enabled else "disabled",
-    )
+
+    if redis_config.enabled:
+        LOGGER.info(
+            f"  redis:             {redis_config.host}:{redis_config.port} "
+            f"db={redis_config.db} ssl={redis_config.ssl}"
+        )
 
     coordinator_service = CoordinatorService(
         config=coordinator_config,
@@ -270,46 +243,29 @@ def start_coordinator(
     coordinator_service.register_dataset(dataset)
 
     LOGGER.info(
-        "Dataset ready id=%s samples=%s batch_size=%s "
-        "dataset_format=%s payload_format=%s",
-        dataset.dataset_id,
-        dataset.sample_count,
-        dataset.batch_size,
-        dataset.dataset_format,
-        dataset.payload_format.value,
+        f"Dataset ready | id={dataset.dataset_id} | samples={dataset.sample_count} | "
+        f"batch_size={dataset.batch_size} | format={dataset.dataset_format} | "
+        f"payload={dataset.payload_format.value}"
     )
 
+    # Binding is an implementation detail. Other nodes connect using
+    # TopologyConfig.coordinator_address().
     server = serve_grpc(
         coordinator_service,
-        host=coordinator_config.host,
+        host="0.0.0.0",
         port=coordinator_config.port,
         grpc_max_workers=coordinator_config.grpc_max_workers,
     )
 
     LOGGER.info("Coordinator ready")
-
     return LocalCoordinatorHandle(
         server=server,
         coordinator_service=coordinator_service,
     )
 
 
-def launch_coordinator_only(
-    *,
-    deployment_config: DeploymentConfig,
-    dataset_config: DatasetConfig,
-) -> list[RuntimeHandle]:
-    handle = start_coordinator(
-        coordinator_config=deployment_config.coordinator,
-        dataset_config=dataset_config,
-        redis_config=deployment_config.redis,
-    )
-
-    return [handle]
-
-
 # ---------------------------------------------------------------------------
-# Worker launch
+# Workers
 # ---------------------------------------------------------------------------
 
 
@@ -326,33 +282,27 @@ def worker_process_entry(
 
     logger = logging.getLogger("batchflow.worker_process")
 
-    logger.info("Starting worker process")
-    logger.info("  worker_id:   %s", worker_config.worker_id)
-    logger.info("  coordinator: %s", worker_config.coordinator_address)
-    logger.info("  hostname:    %s", worker_config.hostname)
+    logger.info(f"Starting worker {worker_config.worker_id}")
+    logger.info(f"  coordinator: {worker_config.coordinator_address}")
+    logger.info(f"  hostname:    {worker_config.hostname}")
+    logger.info(f"  fetch addr:  {worker_config.fetch_host}:{worker_config.fetch_port}")
     logger.info(
-        "  fetch_addr:  %s:%s",
-        worker_config.fetch_host,
-        worker_config.fetch_port,
+        "  assignment:  "
+        + (
+            str(worker_config.static_job_index)
+            if worker_config.static_job_index is not None
+            else "shared"
+        )
     )
     logger.info(
-        "  static_job:  %s",
-        worker_config.static_job_index
-        if worker_config.static_job_index is not None
-        else "shared",
-    )
-    logger.info(
-        "  redis:       %s",
-        "enabled" if worker_config.redis.enabled else "disabled",
+        "  redis:       "
+        + ("enabled" if worker_config.redis.enabled else "disabled")
     )
 
     if worker_config.redis.enabled:
         logger.info(
-            "  redis_addr:  %s:%s db=%s ssl=%s",
-            worker_config.redis.host,
-            worker_config.redis.port,
-            worker_config.redis.db,
-            worker_config.redis.ssl,
+            f"  redis addr:  {worker_config.redis.host}:{worker_config.redis.port} "
+            f"db={worker_config.redis.db} ssl={worker_config.redis.ssl}"
         )
 
     worker = DataWorker(
@@ -372,24 +322,18 @@ def worker_process_entry(
 
     try:
         worker.start()
-        logger.info("Worker ready worker_id=%s", worker_config.worker_id)
+        logger.info(f"Worker ready {worker_config.worker_id}")
 
         while True:
             time.sleep(3600)
 
     except KeyboardInterrupt:
-        logger.info(
-            "Worker received KeyboardInterrupt worker_id=%s",
-            worker_config.worker_id,
-        )
+        logger.info(f"Worker received KeyboardInterrupt {worker_config.worker_id}")
 
     finally:
-        logger.info("Worker shutting down worker_id=%s", worker_config.worker_id)
+        logger.info(f"Worker shutting down {worker_config.worker_id}")
         worker.stop()
-        logger.info(
-            "Worker shutdown complete worker_id=%s",
-            worker_config.worker_id,
-        )
+        logger.info(f"Worker shutdown complete {worker_config.worker_id}")
 
 
 def launch_local_worker_process(
@@ -407,7 +351,6 @@ def launch_local_worker_process(
         name=worker_config.worker_id,
         daemon=True,
     )
-
     process.start()
 
     return ManagedProcessHandle(
@@ -422,9 +365,8 @@ def _wait_for_grpc_endpoint(
     timeout_seconds: float,
 ) -> None:
     LOGGER.info(
-        "Waiting for coordinator connectivity address=%s timeout=%.1fs",
-        address,
-        timeout_seconds,
+        f"Waiting for coordinator | address={address} | "
+        f"timeout={timeout_seconds:.1f}s"
     )
 
     channel = grpc.insecure_channel(address)
@@ -439,230 +381,205 @@ def _wait_for_grpc_endpoint(
     finally:
         channel.close()
 
-    LOGGER.info("Coordinator reachable address=%s", address)
+    LOGGER.info(f"Coordinator reachable | address={address}")
 
 
-def _resolve_worker_host(
-    deployment_config: DeploymentConfig,
-    worker_host_id: str | None,
-) -> WorkerHostConfig:
-    hosts = deployment_config.worker_hosts
-
-    if worker_host_id:
-        for host in hosts:
-            if host.id == worker_host_id:
-                return host
-
-        available = ", ".join(host.id for host in hosts) or "<none>"
-        raise ValueError(
-            f"Unknown worker_host_id={worker_host_id!r}. "
-            f"Available worker hosts: {available}"
-        )
-
-    if len(hosts) == 1:
-        return hosts[0]
-
-    if not hosts:
-        raise ValueError("No worker_hosts are configured")
-
-    available = ", ".join(host.id for host in hosts)
-    raise ValueError(
-        "Multiple worker hosts are configured. Specify worker_host_id on the "
-        f"worker machine. Available worker hosts: {available}"
-    )
-
-
-def launch_worker_host(
+def launch_workers(
     *,
-    deployment_config: DeploymentConfig,
-    worker_host: WorkerHostConfig,
+    node_id: str,
+    node: NodeConfig,
+    coordinator_address: str,
+    scheduler_config: SchedulerConfig,
+    redis_config: RedisConfig,
     run_dir: Path,
     log_level: str | int = "INFO",
 ) -> list[RuntimeHandle]:
-    coordinator_address = deployment_config.coordinator.addr
+    if node.worker_count <= 0:
+        return []
 
-    if deployment_config.verify_connectivity:
-        _wait_for_grpc_endpoint(
-            coordinator_address,
-            timeout_seconds=deployment_config.startup_timeout_seconds,
-        )
+    LOGGER.info(
+        f"Starting workers | node={node_id} | host={node.host} | "
+        f"workers={node.worker_count} | coordinator={coordinator_address}"
+    )
 
-    LOGGER.info("Starting worker host id=%s", worker_host.id)
-    LOGGER.info("  advertised hostname: %s", worker_host.hostname)
-    LOGGER.info("  workers:             %s", worker_host.worker_count)
-    if (
-        str(deployment_config.coordinator.scheduler.worker_assignment_mode)
-        .strip()
-        .lower()
-        == "static"
-    ):
-        static_job_count = int(
-            deployment_config.coordinator.scheduler.static_job_count
+    if scheduler_config.worker_assignment_mode.strip().lower() == "static":
+        LOGGER.info(
+            f"  static jobs:        {scheduler_config.static_job_count}"
         )
         LOGGER.info(
-            "  static workers/job:  %s",
-            worker_host.worker_count // static_job_count,
+            f"  workers/job:        "
+            f"{node.worker_count // scheduler_config.static_job_count}"
         )
-    LOGGER.info("  coordinator:         %s", coordinator_address)
 
     handles: list[RuntimeHandle] = []
 
-    for worker_index in range(worker_host.worker_count):
+    for worker_index in range(node.worker_count):
         worker_config = make_worker_config(
-            node=worker_host,
+            node_id=node_id,
+            node=node,
             worker_index=worker_index,
             coordinator_address=coordinator_address,
-            scheduler_config=deployment_config.coordinator.scheduler,
-            redis_config=deployment_config.redis,
+            scheduler_config=scheduler_config,
+            redis_config=redis_config,
         )
 
-        worker_handle = launch_local_worker_process(
-            worker_config=worker_config,
-            run_dir=run_dir,
-            log_level=log_level,
+        handles.append(
+            launch_local_worker_process(
+                worker_config=worker_config,
+                run_dir=run_dir,
+                log_level=log_level,
+            )
         )
-        handles.append(worker_handle)
 
     return handles
 
 
-def launch_workers_only(
-    *,
-    deployment_config: DeploymentConfig,
-    worker_host_id: str | None,
-    run_dir: Path,
-    log_level: str | int = "INFO",
-) -> list[RuntimeHandle]:
-    worker_host = _resolve_worker_host(
-        deployment_config,
-        worker_host_id,
-    )
-
-    return launch_worker_host(
-        deployment_config=deployment_config,
-        worker_host=worker_host,
-        run_dir=run_dir,
-        log_level=log_level,
-    )
-
-
 # ---------------------------------------------------------------------------
-# Co-located launch
+# Node launch
 # ---------------------------------------------------------------------------
 
 
-def launch_colocated_batchflow(
+def _validate_node_launch(
     *,
-    deployment_config: DeploymentConfig,
-    dataset_config: DatasetConfig,
+    topology: TopologyConfig,
+    scheduler: SchedulerConfig,
+    node_id: str,
+) -> NodeConfig:
+    if topology.coordinator.node not in topology.nodes:
+        available = ", ".join(topology.nodes) or "<none>"
+        raise ValueError(
+            f"Coordinator node {topology.coordinator.node!r} is not defined. "
+            f"Available nodes: {available}"
+        )
+
+    if node_id not in topology.nodes:
+        available = ", ".join(topology.nodes) or "<none>"
+        raise ValueError(
+            f"Unknown node_id={node_id!r}. Available nodes: {available}"
+        )
+
+    node = topology.nodes[node_id]
+
+    if node.worker_count < 0:
+        raise ValueError(
+            f"worker_count must be >= 0 for node={node_id!r}, "
+            f"got {node.worker_count}"
+        )
+
+    if not node.host.strip():
+        raise ValueError(f"Node {node_id!r} must define a reachable host")
+
+    if not 1 <= topology.coordinator.port <= 65535:
+        raise ValueError(
+            f"Invalid coordinator port={topology.coordinator.port}"
+        )
+
+    if node.worker_count > 0:
+        last_worker_port = node.worker_port(node.worker_count - 1)
+
+        if not 1 <= node.worker_port_start <= 65535 or last_worker_port > 65535:
+            raise ValueError(
+                f"Invalid worker port range for node={node_id!r}: "
+                f"{node.worker_port_start}-{last_worker_port}"
+            )
+
+    assignment_mode = scheduler.worker_assignment_mode.strip().lower()
+
+    if assignment_mode not in {"shared", "static"}:
+        raise ValueError(
+            f"Unknown worker_assignment_mode={assignment_mode!r}; "
+            "expected 'shared' or 'static'"
+        )
+
+    if assignment_mode == "static" and node.worker_count > 0:
+        if scheduler.static_job_count <= 0:
+            raise ValueError(
+                "static worker assignment requires static_job_count > 0"
+            )
+
+        if node.worker_count % scheduler.static_job_count != 0:
+            raise ValueError(
+                f"worker_count must be divisible by static_job_count for "
+                f"node={node_id!r}: worker_count={node.worker_count}, "
+                f"static_job_count={scheduler.static_job_count}"
+            )
+
+    owns_coordinator = topology.coordinator.node == node_id
+
+    if not owns_coordinator and node.worker_count == 0:
+        raise ValueError(
+            f"Node {node_id!r} has no BatchFlow services configured: "
+            "it is not the coordinator node and worker_count=0"
+        )
+
+    return node
+
+
+def launch_node(
+    *,
+    topology: TopologyConfig,
+    scheduler: SchedulerConfig,
+    dataset: DatasetConfig,
+    node_id: str,
     run_dir: Path,
     log_level: str | int = "INFO",
 ) -> list[RuntimeHandle]:
-    run_dir.mkdir(parents=True, exist_ok=True)
+    node = _validate_node_launch(
+        topology=topology,
+        scheduler=scheduler,
+        node_id=node_id,
+    )
+
+    coordinator_address = topology.coordinator_address()
+    redis_config = runtime_redis_config(topology, scheduler)
+    owns_coordinator = topology.coordinator.node == node_id
+
+    LOGGER.info(f"Launching node {node_id}")
+    LOGGER.info(f"  host:        {node.host}")
+    LOGGER.info(f"  coordinator: {coordinator_address}")
+    LOGGER.info(f"  owns coord:  {owns_coordinator}")
+    LOGGER.info(f"  workers:     {node.worker_count}")
 
     handles: list[RuntimeHandle] = []
 
-    coordinator_handle = start_coordinator(
-        coordinator_config=deployment_config.coordinator,
-        dataset_config=dataset_config,
-        redis_config=deployment_config.redis,
-    )
-    handles.append(coordinator_handle)
+    if owns_coordinator:
+        coordinator_config = coordinator_runtime_config(topology, scheduler)
 
-    # Give the local server a brief moment to begin accepting connections.
-    time.sleep(0.5)
+        handles.append(
+            start_coordinator(
+                coordinator_config=coordinator_config,
+                dataset_config=dataset,
+                redis_config=redis_config,
+            )
+        )
 
-    worker_count = sum(
-        host.worker_count for host in deployment_config.worker_hosts
-    )
-    LOGGER.info("Starting %s co-located worker(s)", worker_count)
+    # Wait before spawning workers. This handles both:
+    #   1. local/co-located coordinator + workers
+    #   2. workers connecting to a coordinator on another node
+    if node.worker_count > 0 and (owns_coordinator or topology.verify_connectivity):
+        _wait_for_grpc_endpoint(
+            coordinator_address,
+            timeout_seconds=topology.startup_timeout_seconds,
+        )
 
-    for worker_host in deployment_config.worker_hosts:
-        worker_handles = launch_worker_host(
-            deployment_config=deployment_config,
-            worker_host=worker_host,
+    handles.extend(
+        launch_workers(
+            node_id=node_id,
+            node=node,
+            coordinator_address=coordinator_address,
+            scheduler_config=scheduler,
+            redis_config=redis_config,
             run_dir=run_dir,
             log_level=log_level,
         )
-        handles.extend(worker_handles)
+    )
 
     return handles
 
 
 # ---------------------------------------------------------------------------
-# Launch validation / shutdown
+# Shutdown
 # ---------------------------------------------------------------------------
-
-
-def _normalize_mode(mode: str) -> str:
-    normalized = str(mode).strip().lower().replace("_", "-")
-
-    if normalized == "colocated":
-        normalized = "co-located"
-
-    return normalized
-
-
-def _validate_launch_request(
-    *,
-    deployment_config: DeploymentConfig,
-    role: str,
-) -> None:
-    if role not in VALID_ROLES:
-        raise ValueError(
-            f"Unsupported role={role!r}. Expected one of: "
-            f"{', '.join(sorted(VALID_ROLES))}"
-        )
-
-    mode = _normalize_mode(deployment_config.mode)
-
-    if mode not in {"co-located", "disaggregated"}:
-        raise ValueError(
-            f"Unsupported deployment mode={deployment_config.mode!r}. "
-            "Expected 'co-located' or 'disaggregated'."
-        )
-
-    if mode == "disaggregated" and role == ROLE_ALL:
-        raise ValueError(
-            "A disaggregated deployment must be launched by role. "
-            "Use role=coordinator on the coordinator/training machine and "
-            "role=worker on each data-worker machine."
-        )
-
-    assignment_mode = str(
-        deployment_config.coordinator.scheduler.worker_assignment_mode
-    ).strip().lower()
-
-    if assignment_mode == "static":
-        static_job_count = int(
-            deployment_config.coordinator.scheduler.static_job_count
-        )
-        if static_job_count <= 0:
-            raise ValueError(
-                "static worker assignment requires scheduler.static_job_count > 0"
-            )
-
-        for worker_host in deployment_config.worker_hosts:
-            if worker_host.worker_count % static_job_count != 0:
-                raise ValueError(
-                    f"worker_count must be divisible by static_job_count for "
-                    f"host={worker_host.id!r}: "
-                    f"worker_count={worker_host.worker_count} "
-                    f"static_job_count={static_job_count}"
-                )
-
-    if role == ROLE_WORKER:
-        coordinator_host = (
-            deployment_config.coordinator.advertised_host
-            or deployment_config.coordinator.host
-        )
-
-        if coordinator_host in {"0.0.0.0", "::", "[::]"}:
-            raise ValueError(
-                "Workers cannot connect to coordinator host "
-                f"{coordinator_host!r}. Set coordinator.advertised_host to "
-                "the coordinator machine's reachable private IP or DNS name."
-            )
 
 
 def stop_all(handles: list[RuntimeHandle]) -> None:
@@ -675,14 +592,14 @@ def stop_all(handles: list[RuntimeHandle]) -> None:
         try:
             handle.stop()
         except Exception:
-            LOGGER.exception("Failed to stop runtime handle %s", handle)
+            LOGGER.exception(f"Failed to stop runtime handle {handle}")
 
     LOGGER.info("BatchFlow stopped")
 
 
 def _install_signal_handlers(handles: list[RuntimeHandle]) -> None:
     def _handle_signal(signum, frame) -> None:  # noqa: ARG001
-        LOGGER.info("Received signal=%s, stopping BatchFlow", signum)
+        LOGGER.info(f"Received signal={signum}, stopping BatchFlow")
         stop_all(handles)
         raise SystemExit(128 + int(signum))
 
@@ -701,59 +618,35 @@ def _install_signal_handlers(handles: list[RuntimeHandle]) -> None:
     config_name="config",
 )
 def main(cfg: DictConfig) -> None:
-
-    base_log_dir = cfg.logging.dir
-    log_level = cfg.logging.level
-
-    run_dir = setup_logging(base_dir=base_log_dir, level=log_level)
-    role = str(cfg.get("role", ROLE_ALL)).strip().lower()
-    deployment_config = parse_deployment_config(cfg)
-    dataset_config = parse_dataset_config(cfg)
-
-
-    raw_worker_host_id = cfg.get("worker_host_id", None)
-    worker_host_id = (
-        str(raw_worker_host_id).strip()
-        if raw_worker_host_id not in (None, "", "null")
-        else None
+    run_dir = setup_logging(
+        base_dir=cfg.logging.dir,
+        level=cfg.logging.level,
     )
 
-    _validate_launch_request(
-        deployment_config=deployment_config,
-        role=role,
-    )
+    node_id = str(cfg.node_id).strip()
+    topology = parse_topology_config(cfg)
+    scheduler = parse_scheduler_config(cfg)
+    dataset = parse_dataset_config(cfg)
 
     LOGGER.info("BatchFlow launch configuration")
-    LOGGER.info("  deployment mode: %s", deployment_config.mode)
-    LOGGER.info("  role:            %s", role)
-
-    if worker_host_id is not None:
-        LOGGER.info("  worker host id:  %s", worker_host_id)
+    LOGGER.info(f"  node:        {node_id}")
+    LOGGER.info(f"  coordinator: {topology.coordinator_address()}")
+    LOGGER.info(f"  policy:      {scheduler.scheduling_strategy}")
+    LOGGER.info(
+        f"  cache:       {'enabled' if scheduler.cache_enabled else 'disabled'}"
+    )
 
     handles: list[RuntimeHandle] = []
 
     try:
-        if role == ROLE_ALL:
-            handles = launch_colocated_batchflow(
-                deployment_config=deployment_config,
-                dataset_config=dataset_config,
-                run_dir=run_dir,
-                log_level=log_level,
-            )
-
-        elif role == ROLE_COORDINATOR:
-            handles = launch_coordinator_only(
-                deployment_config=deployment_config,
-                dataset_config=dataset_config,
-            )
-
-        elif role == ROLE_WORKER:
-            handles = launch_workers_only(
-                deployment_config=deployment_config,
-                worker_host_id=worker_host_id,
-                run_dir=run_dir,
-                log_level=log_level,
-            )
+        handles = launch_node(
+            topology=topology,
+            scheduler=scheduler,
+            dataset=dataset,
+            node_id=node_id,
+            run_dir=run_dir,
+            log_level=cfg.logging.level,
+        )
 
         _install_signal_handlers(handles)
 
@@ -766,7 +659,7 @@ def main(cfg: DictConfig) -> None:
         LOGGER.info("BatchFlow received KeyboardInterrupt")
 
     except Exception:
-        LOGGER.exception("BatchFlow deployment failed")
+        LOGGER.exception("BatchFlow launch failed")
         raise
 
     finally:
