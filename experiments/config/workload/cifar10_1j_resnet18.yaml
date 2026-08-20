@@ -6,7 +6,7 @@ job_defaults:
   num_batches: 20
   warmup_batches: 5
   learning_rate: 0.001
-  device: cpu
+  device: cuda
   use_amp: true
 
 jobs:
