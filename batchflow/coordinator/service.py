@@ -96,7 +96,16 @@ class CoordinatorService:
         )
         self._maintainer_thread.start()
 
+        redis_status = "enabled" if self.redis_payload_store is not None else "disabled"
+        LOGGER.info(
+            "Coordinator service started | reuse=%s | redis=%s | maintainer_interval=%.3fs",
+            self.scheduler.config.reuse_enabled,
+            redis_status,
+            self._maintainer_interval_seconds,
+        )
+
     def shutdown(self) -> None:
+        LOGGER.info("Coordinator service stopping")
         self._stop_event.set()
         self._wake_event.set()
         self._maintainer_thread.join(timeout=5.0)
@@ -104,8 +113,17 @@ class CoordinatorService:
         if self.redis_payload_store is not None:
             self.redis_payload_store.close()
 
+        LOGGER.info("Coordinator service stopped")
+
     def register_dataset(self, dataset: Dataset) -> None:
         self.store.register_dataset(dataset)
+        LOGGER.info(
+            "Dataset registered | id=%s | samples=%s | batch_size=%s | format=%s",
+            dataset.dataset_id,
+            dataset.sample_count,
+            dataset.batch_size,
+            dataset.dataset_format,
+        )
 
     def start_job(
         self,
@@ -123,6 +141,12 @@ class CoordinatorService:
         )
 
         self.store.start_job(job)
+        LOGGER.info(
+            "Job started | job=%s | dataset=%s | lookahead=%s",
+            job.job_id,
+            job.dataset_id,
+            job.lookahead_batches,
+        )
         self._refresh_planned_window_if_needed(job.job_id, force=True)
         self._maintain_job(job.job_id)
         self._wake_event.set()
@@ -154,6 +178,7 @@ class CoordinatorService:
         dataset = self.store.get_dataset(job.dataset_id)
 
         if job.status != JobStatus.ACTIVE:
+            LOGGER.debug("GetNextBatch for inactive job | job=%s | status=%s", job_id, job.status.value)
             handle = BatchHandle(
                 batch_id="",
                 cache_key="",
@@ -184,6 +209,12 @@ class CoordinatorService:
             )
 
         if batch is None:
+            LOGGER.warning(
+                "No planned batch available | job=%s | epoch=%s | next_batch=%s",
+                job.job_id,
+                job.progress.epoch,
+                job.progress.next_batch_index,
+            )
             handle = BatchHandle(
                 batch_id="",
                 cache_key="",
@@ -272,6 +303,13 @@ class CoordinatorService:
         self.store.set_planned_window(job_id, [])
         self._wake_event.set()
 
+        LOGGER.info(
+            "Job finished | job=%s | status=%s | reason=%s",
+            job.job_id,
+            job.status.value,
+            job.closed_reason,
+        )
+
         return FinishJobResult(
             job_id=job.job_id,
             status=job.status,
@@ -285,11 +323,23 @@ class CoordinatorService:
         hostname: str,
         metadata: dict[str, Any] | None = None,
     ):
-        return self.store.register_worker(
+        worker = self.store.register_worker(
             worker_id=worker_id,
             hostname=hostname,
             metadata=metadata,
         )
+
+        metadata = metadata or {}
+        fetch_host = metadata.get("fetch_host", "")
+        fetch_port = metadata.get("fetch_port", "")
+        LOGGER.info(
+            "Worker registered | worker=%s | host=%s | fetch=%s:%s",
+            worker_id,
+            hostname,
+            fetch_host,
+            fetch_port,
+        )
+        return worker
 
     def heartbeat_worker(self, worker_id: str):
         return self.store.heartbeat_worker(worker_id)
@@ -306,9 +356,13 @@ class CoordinatorService:
             return None
 
         if task_state.status == MaterializeBatchTaskStatus.PENDING:
-            task_state = self.store.assign_task_to_worker(
+            task_state = self.store.assign_task_to_worker(task_state.task.task_id, worker_id)
+            LOGGER.debug(
+                "Task assigned | task=%s | worker=%s | job=%s | batch=%s",
                 task_state.task.task_id,
                 worker_id,
+                task_state.task.job_id,
+                task_state.task.batch.batch_id,
             )
 
         return task_state
@@ -401,6 +455,14 @@ class CoordinatorService:
             batch_handle=handle,
         )
 
+        LOGGER.debug(
+            "Task completed | task=%s | worker=%s | batch=%s | storage=%s | bytes=%s",
+            task_id,
+            worker_id,
+            batch.batch_id,
+            final_storage_class.value,
+            size_bytes,
+        )
         self._wake_event.set()
         return task_state
 
@@ -507,6 +569,7 @@ class CoordinatorService:
         reason: str,
     ) -> MaterializeBatchTaskState:
         task_state = self.store.fail_task(task_id, reason)
+        LOGGER.warning("Task failed | task=%s | reason=%s", task_id, reason)
         self._wake_event.set()
         return task_state
 
@@ -538,7 +601,7 @@ class CoordinatorService:
 
     def _cleanup_expired_cache_entries(self) -> bool:
         current_ms = now_ms()
-        removed = False
+        removed_count = 0
 
         for entry in self.store.list_cache_entries():
             if not entry.is_expired(current_ms):
@@ -547,9 +610,12 @@ class CoordinatorService:
                 continue
 
             if self.store.evict_batch(entry.cache_key) is not None:
-                removed = True
+                removed_count += 1
 
-        return removed
+        if removed_count:
+            LOGGER.info("Expired cache entries removed | count=%s", removed_count)
+
+        return removed_count > 0
 
     def _maintain_job(self, job_id: str) -> bool:
         job = self.store.get_job(job_id)
@@ -566,7 +632,7 @@ class CoordinatorService:
 
         target_depth = self.scheduler.target_lookahead_depth(job, self.store)
         considered = 0
-        did_work = False
+        scheduled_count = 0
 
         for batch in planned:
             if batch.epoch != job.progress.epoch:
@@ -586,9 +652,17 @@ class CoordinatorService:
             if self.scheduler.should_materialize(batch, self.store):
                 task = self.scheduler.build_task(batch, job=job, store=self.store)
                 self.store.create_task(task)
-                did_work = True
+                scheduled_count += 1
 
-        return did_work
+        if scheduled_count:
+            LOGGER.debug(
+                "Materialization tasks scheduled | job=%s | count=%s | target_depth=%s",
+                job_id,
+                scheduled_count,
+                target_depth,
+            )
+
+        return scheduled_count > 0
 
     def _schedule_opportunistic_prefetch(self) -> bool:
         if not self.scheduler.config.reuse_enabled:
@@ -682,6 +756,14 @@ class CoordinatorService:
                 value,
                 scheduled,
                 spare_slots,
+            )
+
+        if scheduled:
+            LOGGER.info(
+                "Opportunistic prefetch scheduled | tasks=%s | spare_slots=%s | candidates=%s",
+                scheduled,
+                spare_slots,
+                len(candidates),
             )
 
         return scheduled > 0

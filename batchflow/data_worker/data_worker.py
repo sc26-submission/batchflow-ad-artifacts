@@ -34,7 +34,7 @@ class DataWorker:
         transient_ttl: int,
         redis_config: RedisConfig,
         payload_cleanup_interval_seconds: float = 1000.0,
-        log_every_n_tasks: int = 2,
+        log_every_n_tasks: int = 10,
     ) -> None:
         self.worker_id = worker_id
         self.coordinator_address = coordinator_address
@@ -83,13 +83,12 @@ class DataWorker:
 
     def start(self) -> None:
         LOGGER.info(
-            "Starting worker worker_id=%s coordinator_address=%s "
-            "fetch_address=%s:%s reuse_enabled=%s",
+            "Worker runtime starting | id=%s | coordinator=%s | fetch=%s:%s | reuse=%s",
             self.worker_id,
             self.coordinator_address,
             self.fetch_host,
             self.fetch_port,
-            self.redis_payload_store is not None,
+            "enabled" if self.redis_payload_store is not None else "disabled",
         )
 
         # Listen on all local interfaces. fetch_host is the address advertised
@@ -119,14 +118,14 @@ class DataWorker:
         self._thread.start()
 
         LOGGER.info(
-            "Worker started worker_id=%s fetch_address=%s:%s",
+            "Worker runtime ready | id=%s | fetch=%s:%s",
             self.worker_id,
             self.fetch_host,
             self.fetch_port,
         )
 
     def stop(self) -> None:
-        LOGGER.info("Stopping worker worker_id=%s", self.worker_id)
+        LOGGER.info("Worker runtime stopping | id=%s", self.worker_id)
 
         self._stop_event.set()
 
@@ -142,8 +141,7 @@ class DataWorker:
         self.coordinator_client.close()
 
         LOGGER.info(
-            "Worker stopped worker_id=%s completed_tasks=%s "
-            "materialized_tasks=%s reused_tasks=%s",
+            "Worker runtime stopped | id=%s | tasks=%s | materialized=%s | reused=%s",
             self.worker_id,
             self._completed_task_count,
             self._materialized_task_count,
@@ -153,14 +151,13 @@ class DataWorker:
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
             task_id: str | None = None
+            batch_id: str | None = None
 
             try:
                 self._maybe_heartbeat()
                 self._maybe_cleanup_payload_store()
 
-                resp = self.coordinator_client.poll_materialize_batch_task(
-                    self.worker_id
-                )
+                resp = self.coordinator_client.poll_materialize_batch_task(self.worker_id)
 
                 if not resp.has_task:
                     time.sleep(self.poll_interval_seconds)
@@ -169,15 +166,14 @@ class DataWorker:
                 task = resp.task
                 batch = task.batch
                 task_id = task.task_id
+                batch_id = batch.batch_id
                 fetch_key = batch.batch_id
 
                 if task.storage_class not in (
                     batchflow_pb2.STORAGE_CLASS_REUSABLE,
                     batchflow_pb2.STORAGE_CLASS_TRANSIENT,
                 ):
-                    raise ValueError(
-                        f"unknown storage_class={task.storage_class}"
-                    )
+                    raise ValueError(f"unknown storage_class={task.storage_class}")
 
                 if not task.payload_format:
                     raise ValueError(
@@ -192,8 +188,7 @@ class DataWorker:
                 LOGGER.debug(
                     "Picked materialization task worker_id=%s task_id=%s "
                     "job_id=%s batch_id=%s dataset_id=%s epoch=%s "
-                    "batch_index=%s storage_class=%s payload_format=%s "
-                    "dataset_format=%s",
+                    "batch_index=%s storage_class=%s payload_format=%s dataset_format=%s",
                     self.worker_id,
                     task_id,
                     task.job_id,
@@ -216,9 +211,7 @@ class DataWorker:
 
                     if self.redis_payload_store.contains(key=fetch_key):
                         redis_key = self.redis_payload_store.make_key(fetch_key)
-                        payload_bytes = self.redis_payload_store.size_bytes(
-                            key=fetch_key
-                        )
+                        payload_bytes = self.redis_payload_store.size_bytes(key=fetch_key)
 
                         self.coordinator_client.complete_materialize_batch_task(
                             task_id=task_id,
@@ -237,6 +230,7 @@ class DataWorker:
                         self._record_completed_task(
                             batch_id=batch.batch_id,
                             action="reused",
+                            destination="redis",
                             payload_bytes=payload_bytes,
                             storage_class=task.storage_class,
                             payload_format=task.payload_format,
@@ -244,9 +238,7 @@ class DataWorker:
                         continue
 
                 else:
-                    existing_entry = self.local_payload_store.get(
-                        key=fetch_key
-                    )
+                    existing_entry = self.local_payload_store.get(key=fetch_key)
 
                     if existing_entry is not None:
                         self.coordinator_client.complete_materialize_batch_task(
@@ -262,15 +254,14 @@ class DataWorker:
                                 "fetch_key": fetch_key,
                                 "payload_format": existing_entry.payload_format,
                                 "reused_local_payload": "true",
-                                "evict_after_ms": str(
-                                    existing_entry.evict_after_ms
-                                ),
+                                "evict_after_ms": str(existing_entry.evict_after_ms),
                             },
                         )
 
                         self._record_completed_task(
                             batch_id=batch.batch_id,
                             action="reused",
+                            destination="local",
                             payload_bytes=existing_entry.size_bytes,
                             storage_class=task.storage_class,
                             payload_format=existing_entry.payload_format,
@@ -285,9 +276,7 @@ class DataWorker:
                     dataset_format=task.dataset_format,
                 )
 
-                materialize_time_sec = (
-                    time.perf_counter() - materialize_start
-                )
+                materialize_time_sec = time.perf_counter() - materialize_start
 
                 if use_redis:
                     assert self.redis_payload_store is not None
@@ -308,10 +297,9 @@ class DataWorker:
 
                     LOGGER.debug(
                         "Stored reusable payload in Redis "
-                        "worker_id=%s task_id=%s batch_id=%s "
-                        "fetch_key=%s storage_class=%s payload_bytes=%s "
-                        "payload_format=%s materialize_time_sec=%.6f "
-                        "fallback_expires_at_ms=%s",
+                        "worker_id=%s task_id=%s batch_id=%s fetch_key=%s "
+                        "storage_class=%s payload_bytes=%s payload_format=%s "
+                        "materialize_time_sec=%.6f fallback_expires_at_ms=%s",
                         self.worker_id,
                         task_id,
                         batch.batch_id,
@@ -338,9 +326,7 @@ class DataWorker:
                             "fallback_fetch_host": self.fetch_host,
                             "fallback_fetch_port": str(self.fetch_port),
                             "fallback_fetch_key": fetch_key,
-                            "fallback_expires_at_ms": str(
-                                fallback_expires_at_ms
-                            ),
+                            "fallback_expires_at_ms": str(fallback_expires_at_ms),
                         },
                     )
 
@@ -356,10 +342,9 @@ class DataWorker:
 
                     LOGGER.debug(
                         "Stored worker-local batch payload "
-                        "worker_id=%s task_id=%s batch_id=%s "
-                        "fetch_key=%s storage_class=%s payload_bytes=%s "
-                        "payload_format=%s materialize_time_sec=%.6f "
-                        "evict_after_ms=%s",
+                        "worker_id=%s task_id=%s batch_id=%s fetch_key=%s "
+                        "storage_class=%s payload_bytes=%s payload_format=%s "
+                        "materialize_time_sec=%.6f evict_after_ms=%s",
                         self.worker_id,
                         task_id,
                         batch.batch_id,
@@ -392,6 +377,7 @@ class DataWorker:
                 self._record_completed_task(
                     batch_id=batch.batch_id,
                     action="materialized",
+                    destination="redis" if use_redis else "local",
                     payload_bytes=len(materialized.payload),
                     storage_class=task.storage_class,
                     payload_format=materialized.payload_format,
@@ -400,9 +386,10 @@ class DataWorker:
 
             except Exception as exc:
                 LOGGER.exception(
-                    "Worker loop failed worker_id=%s task_id=%s error=%s",
+                    "Task failed | worker=%s | task=%s | batch=%s | error=%s",
                     self.worker_id,
-                    task_id or "",
+                    task_id or "-",
+                    batch_id or "-",
                     exc,
                 )
 
@@ -415,8 +402,7 @@ class DataWorker:
                         )
                     except Exception as report_exc:
                         LOGGER.exception(
-                            "Failed to report materialization task failure "
-                            "worker_id=%s task_id=%s error=%s",
+                            "Could not report task failure | worker=%s | task=%s | error=%s",
                             self.worker_id,
                             task_id,
                             report_exc,
@@ -429,6 +415,7 @@ class DataWorker:
         *,
         batch_id: str,
         action: str,
+        destination: str,
         payload_bytes: int,
         storage_class: int,
         payload_format: str,
@@ -444,42 +431,40 @@ class DataWorker:
         if not self._should_log_task_progress():
             return
 
-        duration_part = (
-            f" last_duration_sec={duration_sec:.4f}"
-            if duration_sec is not None
-            else ""
-        )
+        duration = f" | time={duration_sec:.3f}s" if duration_sec is not None else ""
 
-        LOGGER.debug(
-            "Worker progress worker_id=%s completed_tasks=%s "
-            "materialized_tasks=%s reused_tasks=%s last_action=%s "
-            "last_batch_id=%s last_storage_class=%s last_payload_bytes=%s "
-            "last_payload_format=%s%s",
+        LOGGER.info(
+            "Progress | worker=%s | tasks=%s (%s materialized, %s reused) | "
+            "last=%s | batch=%s | target=%s/%s | size=%s%s",
             self.worker_id,
             self._completed_task_count,
             self._materialized_task_count,
             self._reused_task_count,
             action,
             batch_id,
-            storage_class,
-            payload_bytes,
+            destination,
+            _storage_class_name(storage_class),
+            _format_bytes(payload_bytes),
+            duration,
+        )
+
+        LOGGER.debug(
+            "Last task details | worker=%s | batch=%s | payload_format=%s | storage_class=%s",
+            self.worker_id,
+            batch_id,
             payload_format,
-            duration_part,
+            storage_class,
         )
 
     def _should_log_task_progress(self) -> bool:
         if self.log_every_n_tasks <= 0:
             return False
-
         return self._completed_task_count % self.log_every_n_tasks == 0
 
     def _maybe_heartbeat(self) -> None:
         current_time = time.time()
 
-        if (
-            current_time - self._last_heartbeat
-            >= self.heartbeat_interval_seconds
-        ):
+        if current_time - self._last_heartbeat >= self.heartbeat_interval_seconds:
             self.coordinator_client.heartbeat_worker(self.worker_id)
             self._last_heartbeat = current_time
 
@@ -488,10 +473,7 @@ class DataWorker:
 
         current_time = time.time()
 
-        if (
-            current_time - self._last_payload_cleanup
-            < self.payload_cleanup_interval_seconds
-        ):
+        if current_time - self._last_payload_cleanup < self.payload_cleanup_interval_seconds:
             return
 
         removed_count = self.local_payload_store.cleanup_expired()
@@ -499,8 +481,28 @@ class DataWorker:
 
         if removed_count > 0:
             LOGGER.info(
-                "Cleaned expired local payloads "
-                "worker_id=%s removed_count=%s",
+                "Transient cache cleanup | worker=%s | removed=%s | remaining=%s | memory=%s",
                 self.worker_id,
                 removed_count,
+                self.local_payload_store.size(),
+                _format_bytes(self.local_payload_store.total_bytes()),
             )
+
+
+def _storage_class_name(storage_class: int) -> str:
+    if storage_class == batchflow_pb2.STORAGE_CLASS_REUSABLE:
+        return "reusable"
+    if storage_class == batchflow_pb2.STORAGE_CLASS_TRANSIENT:
+        return "transient"
+    return str(storage_class)
+
+
+def _format_bytes(size_bytes: int) -> str:
+    size = float(size_bytes)
+
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024.0 or unit == "GiB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024.0
+
+    return f"{size_bytes} B"

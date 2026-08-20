@@ -35,78 +35,83 @@ from batchflow.data_worker.data_worker import DataWorker
 
 
 LOGGER = logging.getLogger("batchflow.launch")
-
-
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
+LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 
 
 def _log_level(level: str | int) -> int:
     if isinstance(level, int):
         return level
-
     return getattr(logging, str(level).upper(), logging.INFO)
 
 
-def _reenable_batchflow_loggers(log_level: int) -> None:
-    logging.disable(logging.NOTSET)
+def _file_handler(path: Path, level: int) -> logging.FileHandler:
+    handler = logging.FileHandler(path, mode="w", encoding="utf-8")
+    handler.setLevel(level)
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    return handler
 
+
+def _stream_handler(level: int) -> logging.StreamHandler:
+    handler = logging.StreamHandler()
+    handler.setLevel(level)
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    return handler
+
+
+def _clear_handlers(logger: logging.Logger) -> None:
+    for handler in logger.handlers:
+        handler.close()
+    logger.handlers.clear()
+
+
+def _enable_batchflow_loggers() -> None:
+    """Undo any logger disabling performed by Hydra."""
     for name, logger_obj in logging.Logger.manager.loggerDict.items():
         if name.startswith("batchflow") and isinstance(logger_obj, logging.Logger):
             logger_obj.disabled = False
-            logger_obj.setLevel(log_level)
-            logger_obj.propagate = True
-
-    batchflow_logger = logging.getLogger("batchflow")
-    batchflow_logger.disabled = False
-    batchflow_logger.setLevel(log_level)
-    batchflow_logger.propagate = True
 
 
-def _configure_logging(log_file: Path, level: str | int) -> None:
-    log_level = _log_level(level)
-
-    formatter = logging.Formatter(
-        "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
-    )
-
-    root_logger = logging.getLogger()
-    root_logger.handlers.clear()
-    root_logger.setLevel(log_level)
-
-    stream_handler = logging.StreamHandler()
-    stream_handler.setLevel(log_level)
-    stream_handler.setFormatter(formatter)
-
-    file_handler = logging.FileHandler(
-        log_file,
-        mode="w",
-        encoding="utf-8",
-    )
-    file_handler.setLevel(log_level)
-    file_handler.setFormatter(formatter)
-
-    root_logger.addHandler(stream_handler)
-    root_logger.addHandler(file_handler)
-
-    _reenable_batchflow_loggers(log_level)
-
-
-def setup_logging(
-    base_dir: str | Path = "logs",
-    level: str | int = "INFO",
-) -> Path:
+def setup_logging(base_dir: str | Path = "logs", level: str | int = "INFO") -> Path:
     run_dir = Path(base_dir).resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
+    log_level = _log_level(level)
 
-    log_file = run_dir / "batchflow.log"
-    _configure_logging(log_file, level)
+    # Third-party libraries only emit warnings/errors.
+    root = logging.getLogger()
+    _clear_handlers(root)
+    root.setLevel(logging.WARNING)
 
-    LOGGER.info(
-        f"Logging initialized | file={log_file} | level={level}"
-    )
+    # Re-enable loggers that Hydra may have disabled.
+    _enable_batchflow_loggers()
 
+    # Parent BatchFlow logger handles console output.
+    batchflow_logger = logging.getLogger("batchflow")
+    batchflow_logger.disabled = False
+    _clear_handlers(batchflow_logger)
+    batchflow_logger.setLevel(log_level)
+    batchflow_logger.propagate = False
+    batchflow_logger.addHandler(_stream_handler(log_level))
+
+    # Launcher logs -> batchflow.log
+    launch_logger = logging.getLogger("batchflow.launch")
+    launch_logger.disabled = False
+    _clear_handlers(launch_logger)
+    launch_logger.setLevel(log_level)
+    launch_logger.propagate = True
+    launch_logger.addHandler(_file_handler(run_dir / "batchflow.log", log_level))
+
+    # Coordinator logs -> coordinator.log
+    coordinator_logger = logging.getLogger("batchflow.coordinator")
+    coordinator_logger.disabled = False
+    _clear_handlers(coordinator_logger)
+    coordinator_logger.setLevel(log_level)
+    coordinator_logger.propagate = True
+    coordinator_logger.addHandler(_file_handler(run_dir / "coordinator.log", log_level))
+
+    # Some coordinator child loggers are created before setup_logging().
+    _enable_batchflow_loggers()
+
+    LOGGER.info(f"Logging initialized | dir={run_dir} | level={level}")
     return run_dir
 
 
@@ -117,15 +122,29 @@ def setup_worker_logging(
 ) -> None:
     run_dir = Path(run_dir).resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
+    log_level = _log_level(level)
 
-    log_file = run_dir / f"worker-{worker_id}.log"
-    _configure_logging(log_file, level)
+    root = logging.getLogger()
+    _clear_handlers(root)
+    root.setLevel(logging.WARNING)
 
-    logging.getLogger("batchflow.worker_process").info(
-        f"Worker logging initialized | worker={worker_id} | "
-        f"file={log_file} | level={level}"
+    _enable_batchflow_loggers()
+
+    batchflow_logger = logging.getLogger("batchflow")
+    batchflow_logger.disabled = False
+    _clear_handlers(batchflow_logger)
+    batchflow_logger.setLevel(log_level)
+    batchflow_logger.propagate = False
+    batchflow_logger.addHandler(_stream_handler(log_level))
+    batchflow_logger.addHandler(
+        _file_handler(run_dir / f"worker-{worker_id}.log", log_level)
     )
 
+    _enable_batchflow_loggers()
+
+    logging.getLogger("batchflow.worker").info(
+        f"Logging initialized | worker={worker_id} | level={level}"
+    )
 
 # ---------------------------------------------------------------------------
 # Runtime handles
@@ -292,7 +311,7 @@ def worker_process_entry(
         level=log_level,
     )
 
-    logger = logging.getLogger("batchflow.worker_process")
+    logger = logging.getLogger("batchflow.worker")
 
     logger.info(f"Starting worker {worker_config.worker_id}")
     logger.info(

@@ -10,7 +10,7 @@ from batchflow.proto import batchflow_pb2
 from batchflow.proto import batchflow_pb2_grpc
 
 
-LOGGER = logging.getLogger("batchflow.worker_data_service")
+LOGGER = logging.getLogger("batchflow.worker")
 
 
 class WorkerDataService(batchflow_pb2_grpc.WorkerDataServiceServicer):
@@ -21,6 +21,11 @@ class WorkerDataService(batchflow_pb2_grpc.WorkerDataServiceServicer):
         entry = self.payload_store.get(key=request.key)
 
         if entry is None:
+            LOGGER.warning(
+                "Batch fetch missed | key=%s | local_payloads=%s",
+                request.key,
+                self.payload_store.size(),
+            )
             context.abort(
                 grpc.StatusCode.NOT_FOUND,
                 f"batch payload not found key={request.key}",
@@ -28,10 +33,10 @@ class WorkerDataService(batchflow_pb2_grpc.WorkerDataServiceServicer):
             raise RuntimeError("unreachable after context.abort")
 
         LOGGER.debug(
-            "Fetched batch payload key=%s payload_format=%s payload_bytes=%s",
+            "Batch served | key=%s | size=%s | format=%s",
             request.key,
-            entry.payload_format,
             entry.size_bytes,
+            entry.payload_format,
         )
 
         return batchflow_pb2.FetchBatchResponse(
