@@ -27,7 +27,6 @@ class DataWorker:
         hostname: str,
         fetch_host: str,
         fetch_port: int,
-        static_job_index: int | None,
         poll_interval_seconds: float,
         heartbeat_interval_seconds: float,
         s3_fetch_threads: int,
@@ -42,7 +41,6 @@ class DataWorker:
         self.hostname = hostname
         self.fetch_host = fetch_host
         self.fetch_port = fetch_port
-        self.static_job_index = static_job_index
         self.poll_interval_seconds = poll_interval_seconds
         self.heartbeat_interval_seconds = heartbeat_interval_seconds
         self.transient_ttl = transient_ttl
@@ -51,12 +49,12 @@ class DataWorker:
 
         self.coordinator_client = CoordinatorGrpcClient(coordinator_address)
 
-        # Worker-local payloads are served through the existing gRPC endpoint.
-        # Transient batches always use this store. Reusable batches also use it
-        # when Redis is disabled, which preserves the local-demo path.
+        # Transient payloads are kept in worker-local memory and served
+        # through this worker's gRPC endpoint.
         self.local_payload_store = InMemoryPayloadStore()
 
-        # Reusable payloads use the shared Redis/ElastiCache store when enabled.
+        # Reusable payloads use the shared Redis/ElastiCache store when
+        # reuse is enabled for the current BatchFlow run.
         self.redis_payload_store: RedisPayloadStore | None = None
         if redis_config.enabled:
             self.redis_payload_store = RedisPayloadStore(
@@ -86,7 +84,7 @@ class DataWorker:
     def start(self) -> None:
         LOGGER.info(
             "Starting worker worker_id=%s coordinator_address=%s "
-            "fetch_address=%s:%s redis_enabled=%s",
+            "fetch_address=%s:%s reuse_enabled=%s",
             self.worker_id,
             self.coordinator_address,
             self.fetch_host,
@@ -94,26 +92,23 @@ class DataWorker:
             self.redis_payload_store is not None,
         )
 
-        # This endpoint serves only worker-local payloads. Reusable Redis
-        # payloads are fetched directly by trainers from Redis.
+        # Listen on all local interfaces. fetch_host is the address advertised
+        # to trainers and the coordinator, not the local bind address.
         self._data_server = serve_worker_data_grpc(
             payload_store=self.local_payload_store,
-            host=self.fetch_host,
+            host="0.0.0.0",
             port=self.fetch_port,
         )
 
         self.coordinator_client.connect()
-        metadata = {
-            "fetch_host": self.fetch_host,
-            "fetch_port": str(self.fetch_port),
-        }
-        if self.static_job_index is not None:
-            metadata["static_job_index"] = str(self.static_job_index)
 
         self.coordinator_client.register_worker(
             worker_id=self.worker_id,
             hostname=self.hostname,
-            metadata=metadata,
+            metadata={
+                "fetch_host": self.fetch_host,
+                "fetch_port": str(self.fetch_port),
+            },
         )
 
         self._thread = threading.Thread(
@@ -164,7 +159,7 @@ class DataWorker:
                 self._maybe_cleanup_payload_store()
 
                 resp = self.coordinator_client.poll_materialize_batch_task(
-                    self.worker_id,
+                    self.worker_id
                 )
 
                 if not resp.has_task:
@@ -186,14 +181,12 @@ class DataWorker:
 
                 if not task.payload_format:
                     raise ValueError(
-                        "materialize task missing payload_format "
-                        f"task_id={task_id}"
+                        f"materialize task missing payload_format task_id={task_id}"
                     )
 
                 if not task.dataset_format:
                     raise ValueError(
-                        "materialize task missing dataset_format "
-                        f"task_id={task_id}"
+                        f"materialize task missing dataset_format task_id={task_id}"
                     )
 
                 LOGGER.debug(
@@ -214,12 +207,10 @@ class DataWorker:
                 )
 
                 use_redis = (
-                    task.storage_class
-                    == batchflow_pb2.STORAGE_CLASS_REUSABLE
+                    task.storage_class == batchflow_pb2.STORAGE_CLASS_REUSABLE
                     and self.redis_payload_store is not None
                 )
 
-                # Reusable batch already present in the shared Redis cache.
                 if use_redis:
                     assert self.redis_payload_store is not None
 
@@ -252,8 +243,6 @@ class DataWorker:
                         )
                         continue
 
-                # Transient batches, and reusable batches when Redis is
-                # disabled, use worker-local memory.
                 else:
                     existing_entry = self.local_payload_store.get(
                         key=fetch_key
@@ -263,9 +252,7 @@ class DataWorker:
                         self.coordinator_client.complete_materialize_batch_task(
                             task_id=task_id,
                             worker_id=self.worker_id,
-                            location=(
-                                f"grpc://{self.fetch_host}:{self.fetch_port}"
-                            ),
+                            location=f"grpc://{self.fetch_host}:{self.fetch_port}",
                             size_bytes=existing_entry.size_bytes,
                             storage_class=task.storage_class,
                             expires_at_ms=existing_entry.evict_after_ms,
@@ -290,22 +277,19 @@ class DataWorker:
                         )
                         continue
 
-                # Materialize the batch because it was not already available.
                 materialize_start = time.perf_counter()
+
                 materialized = self.materializer.materialize(
                     batch,
                     payload_format=task.payload_format,
                     dataset_format=task.dataset_format,
                 )
+
                 materialize_time_sec = (
                     time.perf_counter() - materialize_start
                 )
 
                 if use_redis:
-                    # Reusable payloads are written to shared Redis. Keep a
-                    # short-lived worker-local copy as a delivery fallback in
-                    # case the coordinator rejects Redis retention because the
-                    # bounded cache is full of higher-value entries.
                     assert self.redis_payload_store is not None
 
                     redis_key = self.redis_payload_store.put(
@@ -313,6 +297,8 @@ class DataWorker:
                         payload=materialized.payload,
                     )
 
+                    # Keep a temporary local fallback in case Redis retention
+                    # is rejected by the bounded cache policy.
                     fallback_expires_at_ms = self.local_payload_store.put(
                         key=fetch_key,
                         payload=materialized.payload,
@@ -347,9 +333,7 @@ class DataWorker:
                         metadata={
                             "fetch_key": redis_key,
                             "payload_format": materialized.payload_format,
-                            "materialize_time_sec": (
-                                f"{materialize_time_sec:.6f}"
-                            ),
+                            "materialize_time_sec": f"{materialize_time_sec:.6f}",
                             "reused_redis_payload": "false",
                             "fallback_fetch_host": self.fetch_host,
                             "fallback_fetch_port": str(self.fetch_port),
@@ -361,21 +345,13 @@ class DataWorker:
                     )
 
                 else:
-                    # Transient payloads stay local and expire after the
-                    # configured TTL. If Redis is disabled, reusable payloads
-                    # also follow this path but are stored without a TTL.
-                    ttl_seconds = (
-                        self.transient_ttl
-                        if task.storage_class
-                        == batchflow_pb2.STORAGE_CLASS_TRANSIENT
-                        else None
-                    )
-
+                    # Non-reusable payloads stay in worker-local memory and
+                    # expire after the configured transient TTL.
                     evict_after_ms = self.local_payload_store.put(
                         key=fetch_key,
                         payload=materialized.payload,
                         payload_format=materialized.payload_format,
-                        ttl_seconds=ttl_seconds,
+                        ttl_seconds=self.transient_ttl,
                     )
 
                     LOGGER.debug(
@@ -398,9 +374,7 @@ class DataWorker:
                     self.coordinator_client.complete_materialize_batch_task(
                         task_id=task_id,
                         worker_id=self.worker_id,
-                        location=(
-                            f"grpc://{self.fetch_host}:{self.fetch_port}"
-                        ),
+                        location=f"grpc://{self.fetch_host}:{self.fetch_port}",
                         size_bytes=len(materialized.payload),
                         storage_class=task.storage_class,
                         expires_at_ms=evict_after_ms,
@@ -409,9 +383,7 @@ class DataWorker:
                             "fetch_port": str(self.fetch_port),
                             "fetch_key": fetch_key,
                             "payload_format": materialized.payload_format,
-                            "materialize_time_sec": (
-                                f"{materialize_time_sec:.6f}"
-                            ),
+                            "materialize_time_sec": f"{materialize_time_sec:.6f}",
                             "evict_after_ms": str(evict_after_ms),
                             "reused_local_payload": "false",
                         },
@@ -498,10 +470,12 @@ class DataWorker:
     def _should_log_task_progress(self) -> bool:
         if self.log_every_n_tasks <= 0:
             return False
+
         return self._completed_task_count % self.log_every_n_tasks == 0
 
     def _maybe_heartbeat(self) -> None:
         current_time = time.time()
+
         if (
             current_time - self._last_heartbeat
             >= self.heartbeat_interval_seconds
@@ -511,6 +485,7 @@ class DataWorker:
 
     def _maybe_cleanup_payload_store(self) -> None:
         """Clean expired worker-local transient payloads."""
+
         current_time = time.time()
 
         if (

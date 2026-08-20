@@ -14,7 +14,7 @@ class RedisConfig:
     """Shared Redis/ElastiCache configuration."""
 
     # Runtime-only flag. The topology describes where Redis is;
-    # SchedulerConfig.cache_enabled decides whether it is used.
+    # SchedulerConfig.reuse_enabled decides whether it is used.
     enabled: bool = False
 
     host: str = ""
@@ -27,23 +27,12 @@ class RedisConfig:
 
 @dataclass
 class SchedulerConfig:
-    """Coordinator scheduling and cache-policy defaults."""
+    """BatchFlow scheduling and reuse settings."""
 
-    scheduling_strategy: str = "adaptive"
-
-    # shared: every worker may serve any job.
-    # static: workers on each node are partitioned evenly across jobs.
-    worker_assignment_mode: str = "shared"
-    static_job_count: int = 4
-
-    # When enabled, jobs following the same epoch plan intentionally
-    # refer to the same batch/cache identity.
-    share_batches_across_jobs: bool = True
-
-    # Controls both shared Redis caching and worker-local payload reuse.
-    cache_enabled: bool = True
+    reuse_enabled: bool = True
 
     candidate_window_size: int = 32
+    target_ready_batches: int = 16
 
     job_urgency_weight: float = 8.0
     batch_proximity_weight: float = 4.0
@@ -53,9 +42,6 @@ class SchedulerConfig:
 
     reuse_threshold: float = 1.0
     cache_cost_threshold: float = 8.0
-    trainer_bottleneck_weight: float = 0.5
-
-    target_ready_batches: int = 16
 
     cache_capacity_bytes: int = 0
     batch_value_beta: float = 1.0
@@ -69,14 +55,14 @@ class SchedulerConfig:
 class CoordinatorConfig:
     """Coordinator service placement and runtime settings."""
 
-    # ID of the topology node that owns the coordinator.
+    # Topology node that owns the coordinator.
     node: str = "local"
 
     port: int = 50051
     grpc_max_workers: int = 8
     default_lookahead: int = 32
 
-    # Runtime-only policy populated by the launcher.
+    # Runtime-only scheduler settings populated by the launcher.
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
 
 
@@ -111,15 +97,9 @@ class WorkerConfig:
     worker_id: str = "worker-0"
     coordinator_address: str = "127.0.0.1:50051"
 
-    # Kept for compatibility with the current worker implementation.
-    # These can be renamed to advertised_host/bind_host in a later pass.
     hostname: str = "127.0.0.1"
     fetch_host: str = "127.0.0.1"
     fetch_port: int = 0
-
-    # Used only by the static-allocation ablation.
-    # None means the worker belongs to the shared pool.
-    static_job_index: int | None = None
 
     poll_interval_seconds: float = 0.02
     heartbeat_interval_seconds: float = 2.0
@@ -127,8 +107,6 @@ class WorkerConfig:
     decode_threads: int = 4
     transient_ttl: int = 60
 
-    # Populated by the launcher so each spawned worker receives
-    # a self-contained Redis configuration.
     redis: RedisConfig = field(default_factory=RedisConfig)
 
 
@@ -162,7 +140,8 @@ class TopologyConfig:
     verify_connectivity: bool = True
 
     def coordinator_address(self) -> str:
-        """Address workers/trainers use to reach the coordinator."""
+        """Address workers and trainers use to reach the coordinator."""
+
         if self.coordinator.node not in self.nodes:
             available = ", ".join(self.nodes) or "<none>"
             raise ValueError(
@@ -186,16 +165,12 @@ def parse_topology_config(cfg: DictConfig) -> TopologyConfig:
 
 
 def parse_scheduler_config(cfg: DictConfig) -> SchedulerConfig:
-    """Parse how BatchFlow schedules, reuses, and caches work."""
-    policy_cfg = cfg.get("policy")
-
-    if policy_cfg is None:
-        return SchedulerConfig()
-
-    return merge_dataclass(SchedulerConfig, policy_cfg)
+    """Parse BatchFlow scheduler settings."""
+    return merge_dataclass(SchedulerConfig, cfg.scheduler)
 
 
 def parse_dataset_config(cfg: DictConfig) -> DatasetConfig:
+    """Parse dataset settings."""
     return merge_dataclass(DatasetConfig, cfg.dataset)
 
 
@@ -203,14 +178,11 @@ def runtime_redis_config(
     topology: TopologyConfig,
     scheduler: SchedulerConfig,
 ) -> RedisConfig:
-    """Create the effective Redis config for this run.
+    """Build the effective Redis configuration for this run."""
 
-    The topology describes how Redis can be reached. The scheduling policy
-    decides whether the current experiment actually uses it.
-    """
     return replace(
         topology.redis,
-        enabled=scheduler.cache_enabled,
+        enabled=scheduler.reuse_enabled,
     )
 
 
@@ -218,7 +190,8 @@ def coordinator_runtime_config(
     topology: TopologyConfig,
     scheduler: SchedulerConfig,
 ) -> CoordinatorConfig:
-    """Attach the selected policy to the coordinator runtime config."""
+    """Attach scheduler settings to the coordinator runtime config."""
+
     return replace(
         topology.coordinator,
         scheduler=scheduler,
@@ -231,7 +204,6 @@ def make_worker_config(
     node: NodeConfig,
     worker_index: int,
     coordinator_address: str,
-    scheduler_config: SchedulerConfig,
     redis_config: RedisConfig,
 ) -> WorkerConfig:
     """Build the fully resolved config for one worker process."""
@@ -243,30 +215,6 @@ def make_worker_config(
         )
 
     base = node.worker_config
-    assignment_mode = scheduler_config.worker_assignment_mode.strip().lower()
-    static_job_index: int | None = None
-
-    if assignment_mode not in {"shared", "static"}:
-        raise ValueError(
-            f"Unknown worker_assignment_mode={assignment_mode!r}; "
-            "expected 'shared' or 'static'"
-        )
-
-    if assignment_mode == "static":
-        job_count = scheduler_config.static_job_count
-
-        if job_count <= 0:
-            raise ValueError("static_job_count must be > 0 in static mode")
-
-        if node.worker_count % job_count != 0:
-            raise ValueError(
-                f"worker_count must be divisible by static_job_count for "
-                f"node={node_id!r}: worker_count={node.worker_count}, "
-                f"static_job_count={job_count}"
-            )
-
-        workers_per_job = node.worker_count // job_count
-        static_job_index = worker_index // workers_per_job
 
     return WorkerConfig(
         worker_id=f"{node_id}-worker-{worker_index}",
@@ -274,7 +222,6 @@ def make_worker_config(
         hostname=node.host,
         fetch_host=node.host,
         fetch_port=node.worker_port(worker_index),
-        static_job_index=static_job_index,
         poll_interval_seconds=base.poll_interval_seconds,
         heartbeat_interval_seconds=base.heartbeat_interval_seconds,
         s3_fetch_threads=base.s3_fetch_threads,

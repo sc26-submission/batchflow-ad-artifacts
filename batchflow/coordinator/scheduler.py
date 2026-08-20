@@ -43,13 +43,6 @@ class BatchflowScheduler:
     def __init__(self, config: SchedulerConfig | None = None) -> None:
         self.config = config or SchedulerConfig()
 
-        mode = str(self.config.worker_assignment_mode).strip().lower()
-        if mode not in {"shared", "static"}:
-            raise ValueError(
-                "worker_assignment_mode must be 'shared' or 'static', "
-                f"got {self.config.worker_assignment_mode!r}"
-            )
-
     # ------------------------------------------------------------------
     # Online target-depth and scheduling estimates
     # ------------------------------------------------------------------
@@ -125,7 +118,7 @@ class BatchflowScheduler:
 
         cache_entry = (
             store.get_cache_entry(batch.cache_key)
-            if self.config.cache_enabled
+            if self.config.reuse_enabled
             else None
         )
         is_cached = (
@@ -150,7 +143,7 @@ class BatchflowScheduler:
         batch: Batch,
         store: CoordinatorStore,
     ) -> float:
-        if not self.config.cache_enabled:
+        if not self.config.reuse_enabled:
             return 0.0
 
         compatible_jobs = 0
@@ -214,7 +207,7 @@ class BatchflowScheduler:
         dataset_id: str,
         store: CoordinatorStore,
     ) -> float:
-        if not self.config.cache_enabled:
+        if not self.config.reuse_enabled:
             return 0.0
 
         future_demand = 0.0
@@ -278,7 +271,7 @@ class BatchflowScheduler:
         [] means there is already enough room (or capacity is unbounded).
         None means the incoming object should not be retained in Redis.
         """
-        if not self.config.cache_enabled:
+        if not self.config.reuse_enabled:
             return None
 
         capacity = int(self.config.cache_capacity_bytes)
@@ -356,7 +349,7 @@ class BatchflowScheduler:
         store: CoordinatorStore,
     ) -> bool:
         """Best-effort cache-capacity check before scheduling a prefetch."""
-        if not self.config.cache_enabled:
+        if not self.config.reuse_enabled:
             return False
 
         if not self.config.opportunistic_prefetch_enabled:
@@ -406,9 +399,9 @@ class BatchflowScheduler:
         store: CoordinatorStore,
     ) -> MaterializeBatchTask:
         """Build a global reusable-cache prefetch task."""
-        if not self.config.cache_enabled:
+        if not self.config.reuse_enabled:
             raise RuntimeError(
-                "cannot build an opportunistic cache task when cache_enabled=false"
+                "cannot build an opportunistic reuse task when reuse is disabled"
             )
 
         dataset = store.get_dataset(batch.dataset_id)
@@ -547,7 +540,7 @@ class BatchflowScheduler:
         batch: Batch,
         store: CoordinatorStore,
     ) -> StorageClass:
-        if not self.config.cache_enabled:
+        if not self.config.reuse_enabled:
             return StorageClass.TRANSIENT
 
         reuse = self.estimate_reuse_potential(batch, store)
@@ -589,67 +582,31 @@ class BatchflowScheduler:
         task_state: MaterializeBatchTaskState,
         store: CoordinatorStore,
     ) -> float:
-        task = task_state.task
-
-        # Opportunistic tasks have no owning job. Their priority is the global
-        # batch-value score and they are considered only after normal tasks.
-        if self.is_opportunistic_task(task_state):
-            return float(task.priority)
-
-        if self.config.scheduling_strategy == "fifo":
-            return -float(task.created_at_ms)
-
-        base_score = float(task.priority)
-
-        if self.config.scheduling_strategy == "adaptive":
-            return base_score
-
-        if self.config.scheduling_strategy == "trainer_feedback":
-            metrics = store.get_job_metrics(task.job_id)
-            return (
-                base_score
-                + self.config.trainer_bottleneck_weight
-                * float(metrics.data_bottleneck_percent)
-            )
-
-        raise ValueError(
-            f"unknown scheduling_strategy={self.config.scheduling_strategy}"
-        )
+        # Kept in the signature for compatibility with existing call sites.
+        _ = store
+        return float(task_state.task.priority)
 
     def choose_next_task_for_worker(
         self,
         worker_id: str,
         store: CoordinatorStore,
     ) -> MaterializeBatchTaskState | None:
+        # Workers now share one global pool, so worker identity does not
+        # constrain which pending task can be selected.
+        _ = worker_id
         pending = store.list_pending_tasks()
 
         if not pending:
             return None
 
-        assignment_mode = str(self.config.worker_assignment_mode).strip().lower()
-
-        if assignment_mode == "static":
-            target_job_id = self._static_job_id_for_worker(worker_id, store)
-            if target_job_id is None:
-                return None
-
-            candidates = [
-                state
-                for state in pending
-                if state.task.job_id == target_job_id
-                and not self.is_opportunistic_task(state)
-            ]
-            if not candidates:
-                return None
-        else:
-            # Near-term demand always wins. Opportunistic prefetch work only uses
-            # capacity left over after all ordinary pending tasks have been served.
-            normal_pending = [
-                state
-                for state in pending
-                if not self.is_opportunistic_task(state)
-            ]
-            candidates = normal_pending or pending
+        # All workers share one pool. Near-term demand always wins;
+        # opportunistic prefetch only uses otherwise-idle worker capacity.
+        normal_pending = [
+            state
+            for state in pending
+            if not self.is_opportunistic_task(state)
+        ]
+        candidates = normal_pending or pending
 
         candidates.sort(
             key=lambda task_state: self.score_pending_task(task_state, store),
@@ -657,43 +614,6 @@ class BatchflowScheduler:
         )
 
         return candidates[0]
-
-    def _static_job_id_for_worker(
-        self,
-        worker_id: str,
-        store: CoordinatorStore,
-    ) -> str | None:
-        worker = store.get_worker(worker_id)
-        raw_worker_index = worker.metadata.get("static_job_index")
-
-        if raw_worker_index in (None, ""):
-            raise ValueError(
-                "static worker assignment requires workers to register "
-                f"static_job_index metadata; worker={worker_id!r}"
-            )
-
-        try:
-            worker_job_index = int(raw_worker_index)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"invalid static_job_index for worker {worker_id!r}: "
-                f"{raw_worker_index!r}"
-            ) from exc
-
-        for job in store.list_active_jobs():
-            raw_job_index = job.metadata.get("job_index")
-            if raw_job_index in (None, ""):
-                continue
-
-            try:
-                job_index = int(raw_job_index)
-            except (TypeError, ValueError):
-                continue
-
-            if job_index == worker_job_index:
-                return job.job_id
-
-        return None
 
     # ------------------------------------------------------------------
     # Handle construction

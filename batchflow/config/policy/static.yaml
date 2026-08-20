@@ -1,9 +1,0 @@
-# Ablation stages: fixed worker partitions, no dynamic allocation or reuse.
-# With the paper's four-job workloads, each worker host is divided into four
-# equal partitions. A 24-worker host therefore contributes six workers/job.
-scheduling_strategy: fifo
-worker_assignment_mode: static
-static_job_count: 4
-share_batches_across_jobs: false
-cache_enabled: false
-opportunistic_prefetch_enabled: false

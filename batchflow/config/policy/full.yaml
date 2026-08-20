@@ -1,7 +1,0 @@
-# Full BatchFlow policy: dynamic shared-worker allocation + cross-job reuse.
-scheduling_strategy: adaptive
-worker_assignment_mode: shared
-static_job_count: 4
-share_batches_across_jobs: true
-cache_enabled: true
-opportunistic_prefetch_enabled: true

@@ -839,9 +839,7 @@ class CoordinatorService:
         new_batches = self.batch_coordinator.get_batches_for_job(
             dataset=dataset,
             job=job,
-            share_batches_across_jobs=(
-                self.scheduler.config.share_batches_across_jobs
-            ),
+            share_batches_across_jobs=self.scheduler.config.reuse_enabled
         )
 
         self.store.set_planned_window(job_id, new_batches)

@@ -1,0 +1,25 @@
+# Batch reuse
+reuse_enabled: true
+
+# Scheduling
+candidate_window_size: 32
+target_ready_batches: 16
+
+job_urgency_weight: 8.0
+batch_proximity_weight: 4.0
+reuse_weight: 3.0
+materialization_cost_weight: 1.0
+ready_cache_bonus: 100.0
+
+# Reuse / cache admission
+reuse_threshold: 1.0
+cache_cost_threshold: 8.0
+cache_capacity_bytes: 0
+
+# Cache value estimation
+batch_value_beta: 1.0
+preparation_time_ema_alpha: 0.2
+
+# Opportunistic prefetch
+opportunistic_prefetch_enabled: true
+extended_lookahead_multiplier: 2
