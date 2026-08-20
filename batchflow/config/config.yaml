@@ -10,7 +10,7 @@ node_id: local
 
 logging:
   dir: batchflow/logs
-  level: DEBUG #INFO
+  level: INFO #INFO, DEBUG, WARNING, ERROR, CRITICAL
 
 hydra:
   run:

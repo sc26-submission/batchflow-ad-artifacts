@@ -612,8 +612,8 @@ class CoordinatorService:
             if self.store.evict_batch(entry.cache_key) is not None:
                 removed_count += 1
 
-        if removed_count:
-            LOGGER.info("Expired cache entries removed | count=%s", removed_count)
+        # if removed_count:
+        #     LOGGER.info("Expired cache entries removed | removed count=%s", removed_count)
 
         return removed_count > 0
 
