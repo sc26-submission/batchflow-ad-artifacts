@@ -13,7 +13,7 @@ from experiments.config.types import JobConfig
 
 
 @dataclass(frozen=True)
-class StepResult:
+class batchResult:
     loss: float
     batch_size: int
     compute_time_sec: float
@@ -61,31 +61,31 @@ class TrainingComponents:
         else:
             raise ValueError(f"unsupported training task {job.task!r}")
 
-    def run_step(
+    def run_batch(
         self,
         batch: dict[str, Any],
         *,
         scaler: torch.amp.GradScaler,
         amp_enabled: bool,
-    ) -> StepResult:
+    ) -> batchResult:
         if self.task == "classification":
-            return self._classification_step(batch, scaler=scaler, amp_enabled=amp_enabled)
-        return self._retrieval_step(batch, scaler=scaler, amp_enabled=amp_enabled)
+            return self._classification_batch(batch, scaler=scaler, amp_enabled=amp_enabled)
+        return self._retrieval_batch(batch, scaler=scaler, amp_enabled=amp_enabled)
 
-    def _classification_step(
+    def _classification_batch(
         self,
         batch: dict[str, Any],
         *,
         scaler: torch.amp.GradScaler,
         amp_enabled: bool,
-    ) -> StepResult:
+    ) -> batchResult:
         assert self.criterion is not None
 
         images = prepare_model_images(batch["image"])
         labels = batch["label"].long()
         images, labels, h2d_time = self._move_to_device(images, labels)
 
-        return self._backprop_step(
+        return self._backprop_batch(
             forward=lambda: self.criterion(self.model(images), labels),
             batch_size=int(images.shape[0]),
             h2d_time=h2d_time,
@@ -93,13 +93,13 @@ class TrainingComponents:
             amp_enabled=amp_enabled,
         )
 
-    def _retrieval_step(
+    def _retrieval_batch(
         self,
         batch: dict[str, Any],
         *,
         scaler: torch.amp.GradScaler,
         amp_enabled: bool,
-    ) -> StepResult:
+    ) -> batchResult:
         images = prepare_model_images(batch["image"])
         text = batch["text"].long()
         text_atts = batch["text_atts"].long()
@@ -108,7 +108,7 @@ class TrainingComponents:
             images, text, text_atts, idx
         )
 
-        return self._backprop_step(
+        return self._backprop_batch(
             forward=lambda: self.model(
                 images,
                 text,
@@ -133,7 +133,7 @@ class TrainingComponents:
         _cuda_sync(self.device)
         return (*moved, time.perf_counter() - start)
 
-    def _backprop_step(
+    def _backprop_batch(
         self,
         *,
         forward,
@@ -141,7 +141,7 @@ class TrainingComponents:
         h2d_time: float,
         scaler: torch.amp.GradScaler,
         amp_enabled: bool,
-    ) -> StepResult:
+    ) -> batchResult:
         compute_start = time.perf_counter()
         self.optimizer.zero_grad(set_to_none=True)
 
@@ -168,7 +168,7 @@ class TrainingComponents:
         _cuda_sync(self.device)
         optimizer_time = time.perf_counter() - optimizer_start
 
-        return StepResult(
+        return batchResult(
             loss=float(loss.item()),
             batch_size=batch_size,
             compute_time_sec=time.perf_counter() - compute_start,

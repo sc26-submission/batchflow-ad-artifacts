@@ -14,7 +14,7 @@ batchflow/config/policy/<policy>.yaml
     BatchFlow scheduling and reuse behavior.
 
 experiments/config/workload/<workload>.yaml
-    Models/jobs and training-step settings.
+    Models/jobs and training-batch settings.
 
 experiments/config/system/<system>.yaml
     Trainer-side settings for the evaluated system.
@@ -138,12 +138,12 @@ job 3 -> cuda:3
 ```text
 exp_results/<workload>/<system>/<run_id>/
 ├── resolved_config.yaml
-├── per_step_metrics_<job>.csv
+├── per_batch_metrics_<job>.csv
 ├── job_summary.csv
 └── aggregate_summary.csv
 ```
 
-Warmup steps remain in the per-step files but are excluded from the measured
+Warmup batches remain in the per-batch files but are excluded from the measured
 summary statistics. `aggregate_summary.csv` also records the run-level hourly
 resource cost, batches-per-dollar cost efficiency, and ablation metadata when
 applicable. Cost is reported at the aggregate level because the infrastructure

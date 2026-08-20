@@ -20,7 +20,7 @@ RUN_COLUMNS = [
     "aggregate_samples_per_sec",
     "mean_job_data_time_sec",
     "mean_job_compute_time_sec",
-    "mean_job_step_time_sec",
+    "mean_job_batch_time_sec",
     "pricing_name",
     "cost_resource_profile",
     "hourly_cost_usd",
@@ -45,7 +45,7 @@ GROUP_COLUMNS = [
     "std_cost_efficiency_batches_per_dollar",
     "mean_job_data_time_sec",
     "mean_job_compute_time_sec",
-    "mean_job_step_time_sec",
+    "mean_job_batch_time_sec",
     "hourly_cost_usd",
     "pricing_name",
     "cost_resource_profile",
@@ -121,7 +121,7 @@ def aggregate_run_rows(run_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         ]
         data_times = [_float(row, "mean_job_data_time_sec") for row in rows]
         compute_times = [_float(row, "mean_job_compute_time_sec") for row in rows]
-        step_times = [_float(row, "mean_job_step_time_sec") for row in rows]
+        batch_times = [_float(row, "mean_job_batch_time_sec") for row in rows]
 
         first = rows[0]
         hourly_costs = {_float(row, "hourly_cost_usd") for row in rows}
@@ -145,7 +145,7 @@ def aggregate_run_rows(run_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "std_cost_efficiency_batches_per_dollar": _sample_std(efficiencies),
                 "mean_job_data_time_sec": _mean(data_times),
                 "mean_job_compute_time_sec": _mean(compute_times),
-                "mean_job_step_time_sec": _mean(step_times),
+                "mean_job_batch_time_sec": _mean(batch_times),
                 "hourly_cost_usd": next(iter(hourly_costs), 0.0),
                 "pricing_name": first.get("pricing_name", ""),
                 "cost_resource_profile": first.get("cost_resource_profile", ""),

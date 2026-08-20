@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 
 from batchflow.config.config_types import DatasetConfig
 from experiments.baselines.tensorsocket import TensorConsumer, TensorProducer
-from experiments.common.reporting import PerStepMetricsWriter, per_step_metrics_path_for_job
+from experiments.common.reporting import PerbatchMetricsWriter, per_batch_metrics_path_for_job
 from experiments.common.training import build_training_components
 from experiments.config.types import JobConfig, TensorSocketSystemConfig
 from experiments.runners.runner_core import (
@@ -105,9 +105,9 @@ def _run_job(
         receive_timeout_seconds=system.receive_timeout_seconds,
     )
     training = build_training_components(job=job, dataset=dataset, device=device)
-    writer = PerStepMetricsWriter(
-        per_step_metrics_path_for_job(output_dir, job.name),
-        flush_every_steps=10,
+    writer = PerbatchMetricsWriter(
+        per_batch_metrics_path_for_job(output_dir, job.name),
+        flush_every_batches=10,
     )
 
     logger.info("Starting TensorSocket job task=%s device=%s", job.task, device)
@@ -118,11 +118,11 @@ def _run_job(
             job_id=job.name,
             batch_iter=consumer,
             training=training,
-            num_steps=job.num_steps,
-            warmup_steps=job.warmup_steps,
+            num_batches=job.num_batches,
+            warmup_batches=job.warmup_batches,
             device=device,
             use_amp=use_amp,
-            on_step_end=writer.write_step,
+            on_batch_end=writer.write_batch,
             logger=logger,
         )
         logger.info("TensorSocket job complete")

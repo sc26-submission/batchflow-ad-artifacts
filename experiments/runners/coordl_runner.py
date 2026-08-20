@@ -15,7 +15,7 @@ from experiments.baselines.coordl import (
     dataset_sample_count,
     run_preparation_owner,
 )
-from experiments.common.reporting import PerStepMetricsWriter, per_step_metrics_path_for_job
+from experiments.common.reporting import PerbatchMetricsWriter, per_batch_metrics_path_for_job
 from experiments.common.training import build_training_components
 from experiments.config.types import CoorDLSystemConfig, JobConfig
 from experiments.runners.runner_core import (
@@ -33,13 +33,13 @@ def _validate_jobs(job_configs: tuple[JobConfig, ...]) -> int:
     if not job_configs:
         raise ValueError("CoorDL requires at least one job")
 
-    expected = (job_configs[0].warmup_steps, job_configs[0].num_steps)
+    expected = (job_configs[0].warmup_batches, job_configs[0].num_batches)
     for job in job_configs[1:]:
-        current = (job.warmup_steps, job.num_steps)
+        current = (job.warmup_batches, job.num_batches)
         if current != expected:
             raise ValueError(
-                "CoorDL coordinated prep requires the same warmup_steps and "
-                f"num_steps for every job; expected {expected}, got {current} for {job.name!r}"
+                "CoorDL coordinated prep requires the same warmup_batches and "
+                f"num_batches for every job; expected {expected}, got {current} for {job.name!r}"
             )
 
     return sum(expected)
@@ -75,9 +75,9 @@ def _run_job(
 
     training = build_training_components(job=job, dataset=dataset, device=device)
 
-    writer = PerStepMetricsWriter(
-        per_step_metrics_path_for_job(output_dir, job.name),
-        flush_every_steps=10,
+    writer = PerbatchMetricsWriter(
+        per_batch_metrics_path_for_job(output_dir, job.name),
+        flush_every_batches=10,
     )
 
     logger.info("Starting CoorDL job task=%s device=%s", job.task, device)
@@ -88,11 +88,11 @@ def _run_job(
             job_id=job.name,
             batch_iter=batch_iter,
             training=training,
-            num_steps=job.num_steps,
-            warmup_steps=job.warmup_steps,
+            num_batches=job.num_batches,
+            warmup_batches=job.warmup_batches,
             device=device,
             use_amp=use_amp,
-            on_step_end=writer.write_step,
+            on_batch_end=writer.write_batch,
             logger=logger,
         )
         logger.info("CoorDL job complete")

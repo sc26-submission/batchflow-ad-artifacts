@@ -40,7 +40,7 @@ WORKER_START_PORT = 60061
 NUM_WORKERS = 2
 NUM_SAMPLES = 256
 BATCH_SIZE = 32
-MAX_STEPS = 5
+MAX_batches = 5
 INPUT_SHAPE = (3, 32, 32)
 NUM_CLASSES = 10
 
@@ -116,7 +116,7 @@ def run_training(coordinator_address: str) -> None:
         coordinator_address=coordinator_address,
         dataset_id="synthetic-torch",
         job_id="pytorch-smoke-test",
-        max_batches=MAX_STEPS,
+        max_batches=MAX_batches,
         lookahead_batches=LOOKAHEAD_BATCHES,
         request_poll_interval_seconds=0.05,
         fetch_timeout_seconds=30.0,
@@ -141,8 +141,8 @@ def run_training(coordinator_address: str) -> None:
     LOGGER.info("Starting PyTorch smoke test")
 
     try:
-        for step in range(MAX_STEPS):
-            step_start = time.perf_counter()
+        for batch in range(MAX_batches):
+            batch_start = time.perf_counter()
 
             data_start = time.perf_counter()
             batch = next(loader_iter)
@@ -157,13 +157,13 @@ def run_training(coordinator_address: str) -> None:
             logits = model(inputs)
             loss = criterion(logits, labels)
             loss.backward()
-            optimizer.step()
+            optimizer.batch()
 
             compute_time_sec = time.perf_counter() - compute_start
-            step_time_sec = time.perf_counter() - step_start
+            batch_time_sec = time.perf_counter() - batch_start
 
             data_bottleneck_percent = (
-                100.0 * data_time_sec / max(step_time_sec, 1e-12)
+                100.0 * data_time_sec / max(batch_time_sec, 1e-12)
             )
 
             update_metrics = getattr(loader_iter, "update_runtime_metrics", None)
@@ -182,10 +182,10 @@ def run_training(coordinator_address: str) -> None:
                 )
 
             LOGGER.info(
-                "step=%d/%d loss=%.4f data_time=%.4fs compute_time=%.4fs "
+                "batch=%d/%d loss=%.4f data_time=%.4fs compute_time=%.4fs "
                 "fetch_location=%s",
-                step + 1,
-                MAX_STEPS,
+                batch + 1,
+                MAX_batches,
                 float(loss.item()),
                 data_time_sec,
                 compute_time_sec,

@@ -166,17 +166,17 @@ def _update_batchflow_metrics(
     )
 
 
-def _should_log_step(
-    step: int,
-    total_steps: int,
-    log_every_steps: int,
+def _should_log_batch(
+    batch: int,
+    total_batches: int,
+    log_every_batches: int,
 ) -> bool:
     return (
-        step == 1
-        or step == total_steps
+        batch == 1
+        or batch == total_batches
         or (
-            log_every_steps > 0
-            and step % log_every_steps == 0
+            log_every_batches > 0
+            and batch % log_every_batches == 0
         )
     )
 
@@ -185,14 +185,14 @@ def _log_warmup_progress(
     logger: logging.Logger,
     *,
     mode: str,
-    step: int,
-    warmup_steps: int,
+    batch: int,
+    warmup_batches: int,
     data_time: float,
     compute_time: float,
 ) -> None:
     logger.info(
         f"{mode} | "
-        f"warmup={step}/{warmup_steps} | "
+        f"warmup={batch}/{warmup_batches} | "
         f"data={data_time:.4f}s | "
         f"compute={compute_time:.4f}s"
     )
@@ -202,22 +202,22 @@ def _log_progress(
     logger: logging.Logger,
     *,
     mode: str,
-    step: int,
-    num_steps: int,
+    batch: int,
+    num_batches: int,
     total_samples: int,
     total_data_time: float,
     total_compute_time: float,
-    total_step_time: float,
+    total_batch_time: float,
 ) -> None:
-    avg_data_time = total_data_time / step
-    avg_compute_time = total_compute_time / step
+    avg_data_time = total_data_time / batch
+    avg_compute_time = total_compute_time / batch
 
-    batches_per_sec = step / max(total_step_time, 1e-12)
-    samples_per_sec = total_samples / max(total_step_time, 1e-12)
+    batches_per_sec = batch / max(total_batch_time, 1e-12)
+    samples_per_sec = total_samples / max(total_batch_time, 1e-12)
 
     logger.info(
         f"{mode} | "
-        f"step={step}/{num_steps} | "
+        f"batch={batch}/{num_batches} | "
         f"data={avg_data_time:.4f}s | "
         f"compute={avg_compute_time:.4f}s | "
         f"throughput={batches_per_sec:.2f} batches/s | "
@@ -231,20 +231,20 @@ def run_training_loop(
     job_id: str,
     batch_iter: Iterable[dict[str, Any]],
     training: TrainingComponents,
-    num_steps: int,
-    warmup_steps: int,
+    num_batches: int,
+    warmup_batches: int,
     device: torch.device,
     use_amp: bool,
-    on_step_end: Callable[[dict[str, Any]], None],
+    on_batch_end: Callable[[dict[str, Any]], None],
     logger: logging.Logger,
-    log_every_steps: int = 10,
+    log_every_batches: int = 10,
 ) -> None:
-    """Run warmup steps followed by exactly num_steps training steps."""
+    """Run warmup batches followed by exactly num_batches training batches."""
 
     # Rolling measurements used for BatchFlow runtime feedback.
     data_meter = SmoothedMeter(window_size=20)
     compute_meter = SmoothedMeter(window_size=20)
-    step_meter = SmoothedMeter(window_size=20)
+    batch_meter = SmoothedMeter(window_size=20)
     throughput_meter = SmoothedMeter(window_size=20)
 
     amp_enabled = bool(use_amp and device.type == "cuda")
@@ -254,15 +254,15 @@ def run_training_loop(
     )
 
     iterator = iter(batch_iter)
-    total_loop_steps = warmup_steps + num_steps
+    total_loop_batches = warmup_batches + num_batches
     run_start = time.perf_counter()
 
     # Cumulative values exclude warmup.
-    completed_steps = 0
+    completed_batches = 0
     total_samples = 0
     total_data_time = 0.0
     total_compute_time = 0.0
-    total_step_time = 0.0
+    total_batch_time = 0.0
 
     monitor = ResourceMonitor(
         sample_interval_seconds=0.25,
@@ -273,9 +273,9 @@ def run_training_loop(
     try:
         training.model.train()
 
-        for loop_step in range(total_loop_steps):
-            is_warmup = loop_step < warmup_steps
-            step_start = time.perf_counter()
+        for loop_batch in range(total_loop_batches):
+            is_warmup = loop_batch < warmup_batches
+            batch_start = time.perf_counter()
 
             # Time spent waiting for the next batch.
             data_start = time.perf_counter()
@@ -284,7 +284,7 @@ def run_training_loop(
 
             # batch_metrics = _extract_batch_metrics(batch)
 
-            result = training.run_step(
+            result = training.run_batch(
                 batch,
                 scaler=scaler,
                 amp_enabled=amp_enabled,
@@ -297,13 +297,13 @@ def run_training_loop(
             backward_time = result.backward_time_sec
             optimizer_time = result.optimizer_step_time_sec
 
-            step_time = time.perf_counter() - step_start
-            samples_per_sec = batch_size / max(step_time, 1e-12)
+            batch_time = time.perf_counter() - batch_start
+            samples_per_sec = batch_size / max(batch_time, 1e-12)
 
      
             data_meter.update(data_time)
             compute_meter.update(compute_time)
-            step_meter.update(step_time)
+            batch_meter.update(batch_time)
             throughput_meter.update(samples_per_sec)
 
             # _update_batchflow_metrics(
@@ -313,13 +313,13 @@ def run_training_loop(
             #     batch_metrics=batch_metrics,
             # )
 
-            # Warmup steps are excluded from the cumulative run statistics.
+            # Warmup batches are excluded from the cumulative run statistics.
             if not is_warmup:
-                completed_steps += 1
+                completed_batches += 1
                 total_samples += batch_size
                 total_data_time += data_time
                 total_compute_time += compute_time
-                total_step_time += step_time
+                total_batch_time += batch_time
 
             elapsed_time = time.perf_counter() - run_start
 
@@ -327,12 +327,12 @@ def run_training_loop(
                 "system": mode,
                 "job_id": str(batch.get("job_id") or job_id),
                 "device": str(device),
-                "step": loop_step,
+                "batch": loop_batch,
                 "warmup": int(is_warmup),
                 "batch_id": batch.get("batch_id", gen_batch_id(batch.get("index").tolist())),
                 "batch_size": batch_size,
                 "batch_indices": batch.get("index").tolist(),
-                "total_step_time_sec": step_time,
+                "total_batch_time_sec": batch_time,
                 "total_load_batch_time_sec": data_time,
                 "total_model_compute_time_sec": compute_time,
                 "batch_io_time_sec": float(batch.get("io_time_sec").sum().item()),
@@ -343,48 +343,48 @@ def run_training_loop(
                 "optimizer_step_time_sec": optimizer_time,
                 "loss": loss,
                 "samples_per_sec": total_samples / max(elapsed_time, 1e-12),
-                "batches_per_sec": (loop_step + 1) / max(elapsed_time, 1e-12),
+                "batches_per_sec": (loop_batch + 1) / max(elapsed_time, 1e-12),
                 # **batch_metrics,
                 "elapsed_time_sec": (
                     time.perf_counter() - run_start
                 ),
             }
 
-            on_step_end(row)
+            on_batch_end(row)
 
             if is_warmup:
-                warmup_step = loop_step + 1
+                warmup_batch = loop_batch + 1
 
-                if _should_log_step(
-                    warmup_step,
-                    warmup_steps,
-                    log_every_steps,
+                if _should_log_batch(
+                    warmup_batch,
+                    warmup_batches,
+                    log_every_batches,
                 ):
                     _log_warmup_progress(
                         logger,
                         mode=mode,
-                        step=warmup_step,
-                        warmup_steps=warmup_steps,
+                        batch=warmup_batch,
+                        warmup_batches=warmup_batches,
                         data_time=data_time,
                         compute_time=compute_time,
                     )
 
                 continue
 
-            if _should_log_step(
-                completed_steps,
-                num_steps,
-                log_every_steps,
+            if _should_log_batch(
+                completed_batches,
+                num_batches,
+                log_every_batches,
             ):
                 _log_progress(
                     logger,
                     mode=mode,
-                    step=completed_steps,
-                    num_steps=num_steps,
+                    batch=completed_batches,
+                    num_batches=num_batches,
                     total_samples=total_samples,
                     total_data_time=total_data_time,
                     total_compute_time=total_compute_time,
-                    total_step_time=total_step_time,
+                    total_batch_time=total_batch_time,
                 )
 
     finally:

@@ -9,7 +9,7 @@ from pathlib import Path
 from batchflow.config.config_types import DatasetConfig
 from batchflow.integrations.pytorch.config import BatchFlowTorchConfig
 from batchflow.integrations.pytorch.iterable_dataset import BatchFlowIterableDataset
-from experiments.common.reporting import PerStepMetricsWriter, per_step_metrics_path_for_job
+from experiments.common.reporting import PerbatchMetricsWriter, per_batch_metrics_path_for_job
 from experiments.common.training import build_training_components
 from experiments.config.types import JobConfig
 from experiments.runners.runner_core import (
@@ -41,15 +41,15 @@ def _run_job(
         dataset_id=dataset.dataset_id,
         job_id=job.name,
         job_index=job_index,
-        max_batches=job.warmup_steps + job.num_steps,
+        max_batches=job.warmup_batches + job.num_batches,
     )
     config.validate()
 
     batchflow_dataset = BatchFlowIterableDataset(config=config)
     training = build_training_components(job=job, dataset=dataset, device=device)
-    writer = PerStepMetricsWriter(
-        per_step_metrics_path_for_job(output_dir, job.name),
-        flush_every_steps=10,
+    writer = PerbatchMetricsWriter(
+        per_batch_metrics_path_for_job(output_dir, job.name),
+        flush_every_batches=10,
     )
 
     logger.info("Starting BatchFlow job task=%s device=%s", job.task, device)
@@ -60,11 +60,11 @@ def _run_job(
             job_id=job.name,
             batch_iter=batchflow_dataset,
             training=training,
-            num_steps=job.num_steps,
-            warmup_steps=job.warmup_steps,
+            num_batches=job.num_batches,
+            warmup_batches=job.warmup_batches,
             device=device,
             use_amp=use_amp,
-            on_step_end=writer.write_step,
+            on_batch_end=writer.write_batch,
             logger=logger,
         )
         logger.info("BatchFlow job complete")

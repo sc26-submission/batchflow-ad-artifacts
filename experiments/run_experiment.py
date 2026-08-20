@@ -76,8 +76,8 @@ def _build_jobs(cfg: DictConfig) -> tuple[JobConfig, ...]:
             JobConfig(
                 name=str(values["name"]),
                 model_name=str(values["model_name"]),
-                num_steps=int(values["num_steps"]),
-                warmup_steps=int(values["warmup_steps"]),
+                num_batches=int(values["num_batches"]),
+                warmup_batches=int(values["warmup_batches"]),
                 learning_rate=float(values["learning_rate"]),
                 task=str(values.get("task", "classification")),
                 weight_decay=float(values.get("weight_decay", 0.0)),

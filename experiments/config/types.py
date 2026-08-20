@@ -54,8 +54,8 @@ class JobConfig:
 
     name: str
     model_name: str
-    num_steps: int
-    warmup_steps: int
+    num_batches: int
+    warmup_batches: int
     learning_rate: float
     task: str = "classification"
     weight_decay: float = 0.0

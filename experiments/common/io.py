@@ -19,12 +19,12 @@ class ExperimentCsvWriters:
     Minimal experiment CSV writer.
 
     Writes:
-    - step_rows.csv                  (overwritten for the current run)
+    - batch_rows.csv                  (overwritten for the current run)
     - all_summary_rows.csv           (per-job summaries, appended across runs)
     - all_aggregate_summary_rows.csv (aggregate summaries, appended across runs)
 
     Notes:
-    - step_rows.csv contains only rows from the current invocation
+    - batch_rows.csv contains only rows from the current invocation
     - summary CSVs preserve prior rows if requested
     """
 
@@ -38,7 +38,7 @@ class ExperimentCsvWriters:
         self.out_dir = Path(out_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)
 
-        self._step_rows_logger = CsvLogger(self.out_dir / "step_rows.csv")
+        self._batch_rows_logger = CsvLogger(self.out_dir / "batch_rows.csv")
         self._all_summary_logger = CsvLogger(self.out_dir / "all_summary_rows.csv")
         self._all_aggregate_summary_logger = CsvLogger(
             self.out_dir / "all_aggregate_summary_rows.csv"
@@ -54,10 +54,10 @@ class ExperimentCsvWriters:
             ):
                 self._all_aggregate_summary_logger.log(row)
 
-    def log_step_rows(self, step_rows: list[dict[str, Any]]) -> None:
-        for row in step_rows:
-            self._step_rows_logger.log(row)
-        self._step_rows_logger.flush()
+    def log_batch_rows(self, batch_rows: list[dict[str, Any]]) -> None:
+        for row in batch_rows:
+            self._batch_rows_logger.log(row)
+        self._batch_rows_logger.flush()
 
     def log_summary_row(self, summary_row: dict[str, Any]) -> None:
         self._all_summary_logger.log(summary_row)
@@ -68,11 +68,11 @@ class ExperimentCsvWriters:
         self._all_aggregate_summary_logger.flush()
 
     def flush(self) -> None:
-        self._step_rows_logger.flush()
+        self._batch_rows_logger.flush()
         self._all_summary_logger.flush()
         self._all_aggregate_summary_logger.flush()
 
     def close(self) -> None:
-        self._step_rows_logger.close()
+        self._batch_rows_logger.close()
         self._all_summary_logger.close()
         self._all_aggregate_summary_logger.close()

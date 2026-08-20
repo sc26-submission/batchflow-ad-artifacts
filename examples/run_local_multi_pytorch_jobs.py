@@ -113,8 +113,8 @@ def parse_args() -> argparse.Namespace:
     # Synthetic workload.
     parser.add_argument("--num-dataset-samples", type=int, default=1024)
     parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--max-steps", type=int, default=50)
-    parser.add_argument("--warmup-steps", type=int, default=2)
+    parser.add_argument("--max-batches", type=int, default=50)
+    parser.add_argument("--warmup-batches", type=int, default=2)
     parser.add_argument("--job-start-stagger-seconds", type=float, default=0.0)
 
     # Local networking.
@@ -232,7 +232,7 @@ def run_training_job(
         coordinator_address=coordinator_address,
         dataset_id="synthetic-torch",
         job_id=job_id,
-        max_batches=args.warmup_steps + args.max_steps,
+        max_batches=args.warmup_batches + args.max_batches,
         lookahead_batches=args.lookahead_batches,
         request_poll_interval_seconds=0.05,
         fetch_timeout_seconds=30.0,
@@ -259,7 +259,7 @@ def run_training_job(
 
     data_meter = SmoothedMeter()
     compute_meter = SmoothedMeter()
-    step_meter = SmoothedMeter()
+    batch_meter = SmoothedMeter()
     throughput_meter = SmoothedMeter()
 
     metrics_path = results_dir / f"metrics_{job_name}.csv"
@@ -283,10 +283,10 @@ def run_training_job(
         model.train()
         loader_iter = iter(loader)
 
-        total_steps = args.warmup_steps + args.max_steps
+        total_batches = args.warmup_batches + args.max_batches
 
-        for step in range(total_steps):
-            step_start = time.perf_counter()
+        for batch in range(total_batches):
+            batch_start = time.perf_counter()
 
             data_start = time.perf_counter()
             batch = next(loader_iter)
@@ -303,22 +303,22 @@ def run_training_job(
             loss = criterion(logits, labels)
 
             loss.backward()
-            optimizer.step()
+            optimizer.batch()
 
             compute_time_sec = time.perf_counter() - compute_start
-            step_time_sec = time.perf_counter() - step_start
+            batch_time_sec = time.perf_counter() - batch_start
 
             batch_size = int(inputs.shape[0])
-            samples_per_sec = batch_size / max(step_time_sec, 1e-12)
-            is_warmup = step < args.warmup_steps
+            samples_per_sec = batch_size / max(batch_time_sec, 1e-12)
+            is_warmup = batch < args.warmup_batches
 
             data_meter.update(data_time_sec)
             compute_meter.update(compute_time_sec)
-            step_meter.update(step_time_sec)
+            batch_meter.update(batch_time_sec)
             throughput_meter.update(samples_per_sec)
 
             data_bottleneck_percent = (
-                100.0 * data_time_sec / max(step_time_sec, 1e-12)
+                100.0 * data_time_sec / max(batch_time_sec, 1e-12)
             )
 
             update_metrics = getattr(loader_iter, "update_runtime_metrics", None)
@@ -339,19 +339,19 @@ def run_training_job(
             if not is_warmup:
                 measured_batches += 1
                 measured_samples += batch_size
-                measured_time_sec += step_time_sec
+                measured_time_sec += batch_time_sec
 
             logger.info(
-                "step=%d/%d warmup=%s loss=%.4f data=%.4fs "
-                "compute=%.4fs step_time=%.4fs throughput=%.2f "
+                "batch=%d/%d warmup=%s loss=%.4f data=%.4fs "
+                "compute=%.4fs batch_time=%.4fs throughput=%.2f "
                 "cache=%s location=%s",
-                step + 1,
-                total_steps,
+                batch + 1,
+                total_batches,
                 is_warmup,
                 float(loss.item()),
                 data_time_sec,
                 compute_time_sec,
-                step_time_sec,
+                batch_time_sec,
                 samples_per_sec,
                 batch.get("client_cache_result", ""),
                 batch.get("fetch_location", ""),
@@ -364,7 +364,7 @@ def run_training_job(
                     "job_index": job_index,
                     "job_name": job_name,
                     "job_id": job_id,
-                    "step": step,
+                    "batch": batch,
                     "warmup": int(is_warmup),
                     "batchflow_batch_id": batch.get("batch_id", ""),
                     "batch_index": batch.get("batch_index", -1),
@@ -373,11 +373,11 @@ def run_training_job(
                     "loss": float(loss.item()),
                     "data_time_sec": data_time_sec,
                     "compute_time_sec": compute_time_sec,
-                    "step_time_sec": step_time_sec,
+                    "batch_time_sec": batch_time_sec,
                     "samples_per_sec": samples_per_sec,
                     "avg_data_time_sec": data_meter.avg,
                     "avg_compute_time_sec": compute_meter.avg,
-                    "avg_step_time_sec": step_meter.avg,
+                    "avg_batch_time_sec": batch_meter.avg,
                     "avg_samples_per_sec": throughput_meter.avg,
                     "data_bottleneck_percent": data_bottleneck_percent,
                     "cache_result": batch.get("cache_result", ""),
@@ -402,7 +402,7 @@ def run_training_job(
                 }
             )
 
-            if step > 0 and step % 10 == 0:
+            if batch > 0 and batch % 10 == 0:
                 csv_logger.flush()
 
         measured_throughput = (

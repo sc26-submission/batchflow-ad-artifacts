@@ -9,7 +9,7 @@ from pathlib import Path
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 
 from batchflow.config.config_types import DatasetConfig
-from experiments.common.reporting import PerStepMetricsWriter, per_step_metrics_path_for_job
+from experiments.common.reporting import PerbatchMetricsWriter, per_batch_metrics_path_for_job
 from experiments.common.training import build_training_components
 from experiments.config.types import JobConfig, PytorchSystemConfig
 from experiments.runners.runner_core import (
@@ -66,6 +66,8 @@ def _run_job(
     system: PytorchSystemConfig,
     output_dir: Path,
 ) -> None:
+
+    
     configure_process_logging()
     logger = logging.getLogger(f"experiments.runners.pytorch_runner.{job.name}")
 
@@ -73,9 +75,9 @@ def _run_job(
     device, use_amp = resolve_device_and_amp(job.device, job.use_amp, job_index=job_index)
     dataloader = _build_dataloader(dataset, system, pin_memory=device.type == "cuda")
     training = build_training_components(job=job, dataset=dataset, device=device)
-    writer = PerStepMetricsWriter(
-        per_step_metrics_path_for_job(output_dir, job.name),
-        flush_every_steps=10,
+    writer = PerbatchMetricsWriter(
+        per_batch_metrics_path_for_job(output_dir, job.name),
+        flush_every_batches=10,
     )
 
     logger.info("Starting PyTorch job task=%s device=%s", job.task, device)
@@ -86,14 +88,17 @@ def _run_job(
             job_id=job.name,
             batch_iter=dataloader,
             training=training,
-            num_steps=job.num_steps,
-            warmup_steps=job.warmup_steps,
+            num_batches=job.num_batches,
+            warmup_batches=job.warmup_batches,
             device=device,
             use_amp=use_amp,
-            on_step_end=writer.write_step,
+            on_batch_end=writer.write_batch,
             logger=logger,
         )
         logger.info("PyTorch job complete")
+    except Exception as exc:
+        logger.exception("PyTorch job failed", exc_info=exc)
+        raise exc
     finally:
         writer.close()
 
@@ -140,6 +145,7 @@ def run_pytorch_jobs(
                 LOGGER.info("PyTorch job finished job=%s", job_name)
             except Exception as exc:
                 LOGGER.exception("PyTorch job failed job=%s", job_name)
+                print(f"PyTorch job failed job={job_name} exception={exc!r}")
                 errors.append(f"{job_name}: {exc!r}")
 
     if errors:

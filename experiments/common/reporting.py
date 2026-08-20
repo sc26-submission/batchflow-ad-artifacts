@@ -7,12 +7,12 @@ from typing import Any
 from omegaconf import OmegaConf
 
 
-PER_STEP_COLUMNS = [
-    "step", 
+PER_batch_COLUMNS = [
+    "batch", 
     "warmup", 
     "batch_size", 
     "loss",
-    "step_time_sec", 
+    "batch_time_sec", 
     "load_batch_time_sec", 
     "compute_time_sec",
     "h2d_time_sec", 
@@ -21,7 +21,7 @@ PER_STEP_COLUMNS = [
     "optimizer_step_time_sec", 
     "samples_per_sec",
     "rolling_samples_per_sec", 
-    "avg_step_time_sec",
+    "avg_batch_time_sec",
     "avg_data_time_sec", 
     "avg_compute_time_sec",
     "data_bottleneck_percent", 
@@ -91,9 +91,9 @@ JOB_SUMMARY_COLUMNS = [
     "run_id", "run_timestamp", "num_jobs",
     "dataset_id", "dataset_uri", "dataset_split", "transform_name",
     "batch_size", "mode",
-    "total_steps", "completed_steps", "warmup_steps",
+    "total_batches", "completed_batches", "warmup_batches",
     "total_time_sec", "samples_per_sec", "batches_per_sec",
-    "avg_step_time_sec", "avg_data_time_sec", "avg_compute_time_sec",
+    "avg_batch_time_sec", "avg_data_time_sec", "avg_compute_time_sec",
     "data_to_compute_ratio", "data_bottleneck_percent",
     *JOB_AVERAGE_METRICS.keys(),
 ]
@@ -104,7 +104,7 @@ AGGREGATE_MEAN_METRICS = {
     "avg_job_batches_per_sec": "batches_per_sec",
     "avg_job_data_time_sec": "avg_load_batch_time_sec",
     "avg_job_compute_time_sec": "avg_model_compute_time_sec",
-    "avg_job_step_time_sec": "avg_step_time_sec",
+    "avg_job_batch_time_sec": "avg_batch_time_sec",
 }
 
 
@@ -125,8 +125,8 @@ def _safe_name(value: str) -> str:
     return safe.strip("_") or "job"
 
 
-def per_step_metrics_path_for_job(output_dir: Path, job_name: str) -> Path:
-    return output_dir / f"per_step_metrics_{_safe_name(job_name)}.csv"
+def per_batch_metrics_path_for_job(output_dir: Path, job_name: str) -> Path:
+    return output_dir / f"per_batch_metrics_{_safe_name(job_name)}.csv"
 
 
 def _ordered_fields(rows: list[dict[str, Any]], preferred: list[str]) -> list[str]:
@@ -158,24 +158,24 @@ def read_rows_csv(path: Path) -> list[dict[str, Any]]:
         return list(csv.DictReader(file))
 
 
-class PerStepMetricsWriter:
+class PerbatchMetricsWriter:
     """Streaming CSV writer used by one training process."""
 
-    def __init__(self, path: Path, flush_every_steps: int = 10) -> None:
+    def __init__(self, path: Path, flush_every_batches: int = 10) -> None:
         self.path = path
-        self.flush_every_steps = max(1, flush_every_steps)
+        self.flush_every_batches = max(1, flush_every_batches)
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
         self._file = None
         self._writer: csv.DictWriter | None = None
         self._rows_since_flush = 0
 
-    def write_step(self, row: dict[str, Any]) -> None:
+    def write_batch(self, row: dict[str, Any]) -> None:
         if self._file is None:
             self._file = self.path.open("w", newline="", encoding="utf-8")
             self._writer = csv.DictWriter(
                 self._file,
-                # fieldnames=PER_STEP_COLUMNS,
+                # fieldnames=PER_batch_COLUMNS,
                 fieldnames=row.keys(),
                 extrasaction="ignore",
             )
@@ -185,7 +185,7 @@ class PerStepMetricsWriter:
         self._writer.writerow(row)
         self._rows_since_flush += 1
 
-        if self._rows_since_flush >= self.flush_every_steps:
+        if self._rows_since_flush >= self.flush_every_batches:
             self._file.flush()
             self._rows_since_flush = 0
 
@@ -217,18 +217,18 @@ def build_job_summary(
     path: Path,
     *,
     mode: str,
-    warmup_steps: int,
+    warmup_batches: int,
     metadata: dict[str, Any],
 ) -> dict[str, Any]:
     rows = read_rows_csv(path)
     completed = [row for row in rows if not bool(int(_as_float(row, "warmup")))]
 
-    total_time = sum(_as_float(row, "total_step_time_sec") for row in completed)
+    total_time = sum(_as_float(row, "total_batch_time_sec") for row in completed)
     total_samples = sum(_as_float(row, "batch_size") for row in completed)
     total_batches = len(completed)
     avg_data = _average(completed, "total_load_batch_time_sec")
     avg_compute = _average(completed, "total_model_compute_time_sec")
-    avg_step = _average(completed, "total_step_time_sec")
+    avg_batch = _average(completed, "total_batch_time_sec")
 
     averages = {
         output_name: _average(completed, source_name)
@@ -237,13 +237,13 @@ def build_job_summary(
 
     return {
         **metadata,
-        "total_steps": len(rows),
-        "warmup_steps": warmup_steps,
-        "measured_steps": total_batches,
+        "total_batches": len(rows),
+        "warmup_batches": warmup_batches,
+        "measured_batches": total_batches,
         "total_time_sec": total_time,
         "samples_per_sec": total_samples / max(total_time, 1e-12),
         "batches_per_sec": total_batches / max(total_time, 1e-12),
-        "avg_step_time_sec": avg_step,
+        "avg_batch_time_sec": avg_batch,
         "avg_load_batch_time_sec": avg_data,
         "avg_model_compute_time_sec": avg_compute,
         # "data_to_compute_ratio": avg_data / max(avg_compute, 1e-12),
@@ -434,9 +434,9 @@ class ExperimentReporter:
 
         job_rows = [
             build_job_summary(
-                per_step_metrics_path_for_job(self.run_dir, job.name),
+                per_batch_metrics_path_for_job(self.run_dir, job.name),
                 mode=mode,
-                warmup_steps=job.warmup_steps,
+                warmup_batches=job.warmup_batches,
                 metadata=self._job_metadata(job, num_jobs),
             )
             for job in jobs
@@ -460,6 +460,7 @@ class ExperimentReporter:
             "num_jobs": num_jobs,
             "dataset_id": self.dataset.dataset_id,
             "batch_size": self.dataset.batch_size,
+            "total_batches": sum(_as_float(row, "total_batches") for row in job_rows),
             "aggregate_samples_per_sec": aggregate_samples,
             "aggregate_batches_per_sec": aggregate_batches,
             # **{

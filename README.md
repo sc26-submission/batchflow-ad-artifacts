@@ -21,7 +21,7 @@ batchflow/config/policy/
     How BatchFlow behaves: static allocation, dynamic coordination, and reuse.
 
 experiments/config/workload/
-    Concurrent jobs, models, training steps, and learning rates.
+    Concurrent jobs, models, training batches, and learning rates.
 
 experiments/config/system/
     Trainer-side settings for each evaluated system.
@@ -158,7 +158,7 @@ Results are written to:
 ```text
 exp_results/<workload>/<system>/<run_id>/
 ├── resolved_config.yaml
-├── per_step_metrics_<job>.csv
+├── per_batch_metrics_<job>.csv
 ├── job_summary.csv
 └── aggregate_summary.csv
 ```
