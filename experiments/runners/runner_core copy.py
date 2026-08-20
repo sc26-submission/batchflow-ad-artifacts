@@ -87,9 +87,9 @@ def _extract_batch_metrics(
     batch: dict[str, Any],
 ) -> dict[str, float]:
     keys = {
-        "batch_io_time_sec": "io_time_sec",
-        "batch_decode_time_sec": "decode_time_sec",
-        "batch_transform_time_sec": "transform_time_sec",
+        "baseline_io_time_sec": "io_time_sec",
+        "baseline_decode_time_sec": "decode_time_sec",
+        "baseline_transform_time_sec": "transform_time_sec",
         "batchflow_worker_io_time_sec": "worker_io_time_sec",
         "batchflow_worker_decode_time_sec": "worker_decode_time_sec",
         "batchflow_worker_transform_time_sec": "worker_transform_time_sec",
@@ -124,11 +124,6 @@ def _extract_batch_metrics(
         for output_name, batch_name in keys.items()
     }
 
-def gen_batch_id(indices: list[int]) -> str:
-        # create undique batch id from indices list using hash function
-        return str(hash(tuple(indices)))
-
-     
 
 def _bottleneck_percent(
     data_time: float,
@@ -282,7 +277,7 @@ def run_training_loop(
             batch = next(iterator)
             data_time = time.perf_counter() - data_start
 
-            # batch_metrics = _extract_batch_metrics(batch)
+            batch_metrics = _extract_batch_metrics(batch)
 
             result = training.run_step(
                 batch,
@@ -293,6 +288,7 @@ def run_training_loop(
             loss = result.loss
             batch_size = result.batch_size
             compute_time = result.compute_time_sec
+            h2d_time = result.h2d_time_sec
             forward_time = result.forward_time_sec
             backward_time = result.backward_time_sec
             optimizer_time = result.optimizer_step_time_sec
@@ -300,18 +296,19 @@ def run_training_loop(
             step_time = time.perf_counter() - step_start
             samples_per_sec = batch_size / max(step_time, 1e-12)
 
-     
+            # Rolling values include the most recent steps and are used
+            # for runtime feedback.
             data_meter.update(data_time)
             compute_meter.update(compute_time)
             step_meter.update(step_time)
             throughput_meter.update(samples_per_sec)
 
-            # _update_batchflow_metrics(
-            #     iterator,
-            #     data_meter=data_meter,
-            #     compute_meter=compute_meter,
-            #     batch_metrics=batch_metrics,
-            # )
+            _update_batchflow_metrics(
+                iterator,
+                data_meter=data_meter,
+                compute_meter=compute_meter,
+                batch_metrics=batch_metrics,
+            )
 
             # Warmup steps are excluded from the cumulative run statistics.
             if not is_warmup:
@@ -321,33 +318,47 @@ def run_training_loop(
                 total_compute_time += compute_time
                 total_step_time += step_time
 
-            elapsed_time = time.perf_counter() - run_start
-
             row = {
-                "system": mode,
-                "job_id": str(batch.get("job_id") or job_id),
-                "device": str(device),
+                "mode": mode,
                 "step": loop_step,
                 "warmup": int(is_warmup),
-                "batch_id": batch.get("batch_id", gen_batch_id(batch.get("index").tolist())),
                 "batch_size": batch_size,
-                "batch_indices": batch.get("index").tolist(),
-                "total_step_time_sec": step_time,
-                "total_load_batch_time_sec": data_time,
-                "total_model_compute_time_sec": compute_time,
-                "batch_io_time_sec": float(batch.get("io_time_sec").sum().item()),
-                "batch_decode_time_sec": float(batch.get("decode_time_sec").sum().item()),
-                "batch_transform_time_sec": float(batch.get("transform_time_sec").sum().item()),
-                "forward_pass_time_sec": forward_time,
-                "backward_pass_time_sec": backward_time,
-                "optimizer_step_time_sec": optimizer_time,
                 "loss": loss,
-                "samples_per_sec": total_samples / max(elapsed_time, 1e-12),
-                "batches_per_sec": (loop_step + 1) / max(elapsed_time, 1e-12),
-                # **batch_metrics,
+                "step_time_sec": step_time,
+                "data_time_sec": data_time,
+                "compute_time_sec": compute_time,
+                "h2d_time_sec": h2d_time,
+                "forward_time_sec": forward_time,
+                "backward_time_sec": backward_time,
+                "optimizer_step_time_sec": optimizer_time,
+                "samples_per_sec": samples_per_sec,
+                "rolling_samples_per_sec": throughput_meter.avg,
+                "avg_step_time_sec": step_meter.avg,
+                "avg_data_time_sec": data_meter.avg,
+                "avg_compute_time_sec": compute_meter.avg,
+                "data_bottleneck_percent": _bottleneck_percent(
+                    data_time,
+                    compute_time,
+                ),
+                "avg_data_bottleneck_percent": _bottleneck_percent(
+                    data_meter.avg,
+                    compute_meter.avg,
+                ),
+                **batch_metrics,
+                "batch_index": int(
+                    batch.get("batch_index", -1)
+                ),
+                "batch_id": str(
+                    batch.get("batch_id", "")
+                ),
+                "job_id": str(
+                    batch.get("job_id") or job_id
+                ),
                 "elapsed_time_sec": (
                     time.perf_counter() - run_start
                 ),
+                "device": str(device),
+                "use_amp": int(amp_enabled),
             }
 
             on_step_end(row)
@@ -394,5 +405,3 @@ def run_training_loop(
             close()
 
         monitor.stop()
-
-   

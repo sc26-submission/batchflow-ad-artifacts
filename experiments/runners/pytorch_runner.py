@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
+import torch
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 
 from batchflow.config.config_types import DatasetConfig
 from experiments.common.reporting import PerStepMetricsWriter, per_step_metrics_path_for_job
@@ -33,14 +34,27 @@ def _build_dataloader(
             f"PyTorch experiment datasets must use an S3 URI, got {dataset.prefix_uri!r}"
         )
 
+    torch_dataset = build_torch_dataset(dataset)
+
+
+    if dataset.shuffle:
+        if dataset.seed is None:
+            sampler = RandomSampler(torch_dataset)
+        else:
+            sampler = RandomSampler(torch_dataset, generator=torch.Generator().manual_seed(dataset.seed))
+    else:
+        sampler = SequentialSampler(torch_dataset)
+
     return DataLoader(
-        build_torch_dataset(dataset),
+        dataset=torch_dataset,
+        sampler=sampler,
         batch_size=dataset.batch_size,
-        shuffle=dataset.shuffle,
+        # shuffle=dataset.shuffle,
         drop_last=dataset.drop_last,
         num_workers=system.num_workers,
         persistent_workers=system.persistent_workers and system.num_workers > 0,
         pin_memory=pin_memory,
+    
     )
 
 

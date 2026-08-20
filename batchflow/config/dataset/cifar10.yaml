@@ -5,7 +5,7 @@ dataset_format: image_folder
 transform_name: cifar10_train
 
 num_samples: 0
-batch_size: 64
+batch_size: 8
 drop_last: false
 shuffle: true
 seed: 123

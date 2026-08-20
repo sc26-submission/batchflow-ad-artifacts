@@ -8,25 +8,25 @@ from omegaconf import OmegaConf
 
 
 PER_STEP_COLUMNS = [
-    "step",
-    "warmup",
-    "batch_size",
+    "step", 
+    "warmup", 
+    "batch_size", 
     "loss",
-    "step_time_sec",
-    "data_time_sec",
+    "step_time_sec", 
+    "load_batch_time_sec", 
     "compute_time_sec",
-    "h2d_time_sec",
-    "forward_time_sec",
+    "h2d_time_sec", 
+    "forward_time_sec", 
     "backward_time_sec",
-    "optimizer_step_time_sec",
+    "optimizer_step_time_sec", 
     "samples_per_sec",
-    "rolling_samples_per_sec",
+    "rolling_samples_per_sec", 
     "avg_step_time_sec",
-    "avg_data_time_sec",
+    "avg_data_time_sec", 
     "avg_compute_time_sec",
-    "data_bottleneck_percent",
+    "data_bottleneck_percent", 
     "avg_data_bottleneck_percent",
-    "baseline_io_time_sec",
+    "baseline_io_time_sec", 
     "baseline_decode_time_sec",
     "baseline_transform_time_sec",
     "batchflow_worker_io_time_sec",
@@ -39,111 +39,84 @@ PER_STEP_COLUMNS = [
     "batchflow_coordinator_sleep_time_sec",
     "batchflow_coordinator_wait_total_time_sec",
     "batchflow_coordinator_pending_polls",
-    "trainer_decode_time_sec",
-    "trainer_pin_time_sec",
+    "trainer_decode_time_sec", "trainer_pin_time_sec",
     "prefetch_queue_size_before_put",
     "trainer_queue_size_after_get",
     "trainer_queue_empty_events",
-    "tensorsocket_wait_time_sec",
-    "tensorsocket_cache_hit",
-    "coordl_wait_time_sec",
-    "coordl_deserialize_time_sec",
-    "coordl_io_time_sec",
-    "coordl_decode_time_sec",
-    "coordl_transform_time_sec",
-    "coordl_prep_time_sec",
-    "coordl_payload_bytes",
-    "coordl_is_owner",
-    "batch_index",
-    "batch_id",
-    "job_id",
-    "elapsed_time_sec",
-    "device",
-    "use_amp",
+    "tensorsocket_wait_time_sec", "tensorsocket_cache_hit",
+    "coordl_wait_time_sec", "coordl_deserialize_time_sec",
+    "coordl_io_time_sec", "coordl_decode_time_sec",
+    "coordl_transform_time_sec", "coordl_prep_time_sec",
+    "coordl_payload_bytes", "coordl_is_owner",
+    "batch_index", "batch_id", "job_id",
+    "elapsed_time_sec", "device", "use_amp",
 ]
+
+
+JOB_AVERAGE_METRICS = {
+    "avg_h2d_time_sec": "h2d_time_sec",
+    "avg_forward_time_sec": "forward_time_sec",
+    "avg_backward_time_sec": "backward_time_sec",
+    "avg_optimizer_step_time_sec": "optimizer_step_time_sec",
+    "avg_baseline_io_time_sec": "baseline_io_time_sec",
+    "avg_baseline_decode_time_sec": "baseline_decode_time_sec",
+    "avg_baseline_transform_time_sec": "baseline_transform_time_sec",
+    "avg_batchflow_worker_io_time_sec": "batchflow_worker_io_time_sec",
+    "avg_batchflow_worker_decode_time_sec": "batchflow_worker_decode_time_sec",
+    "avg_batchflow_worker_transform_time_sec": "batchflow_worker_transform_time_sec",
+    "avg_batchflow_worker_stack_time_sec": "batchflow_worker_stack_time_sec",
+    "avg_batchflow_worker_serialize_time_sec": "batchflow_worker_serialize_time_sec",
+    "avg_batchflow_fetch_time_sec": "batchflow_fetch_time_sec",
+    "avg_batchflow_coordinator_rpc_time_sec": "batchflow_coordinator_rpc_time_sec",
+    "avg_batchflow_coordinator_sleep_time_sec": "batchflow_coordinator_sleep_time_sec",
+    "avg_batchflow_coordinator_wait_total_time_sec": "batchflow_coordinator_wait_total_time_sec",
+    "avg_batchflow_coordinator_pending_polls": "batchflow_coordinator_pending_polls",
+    "avg_trainer_decode_time_sec": "trainer_decode_time_sec",
+    "avg_trainer_pin_time_sec": "trainer_pin_time_sec",
+    "avg_tensorsocket_wait_time_sec": "tensorsocket_wait_time_sec",
+    "tensorsocket_cache_hit_rate": "tensorsocket_cache_hit",
+    "avg_coordl_wait_time_sec": "coordl_wait_time_sec",
+    "avg_coordl_deserialize_time_sec": "coordl_deserialize_time_sec",
+    "avg_coordl_io_time_sec": "coordl_io_time_sec",
+    "avg_coordl_decode_time_sec": "coordl_decode_time_sec",
+    "avg_coordl_transform_time_sec": "coordl_transform_time_sec",
+    "avg_coordl_prep_time_sec": "coordl_prep_time_sec",
+    "avg_coordl_payload_bytes": "coordl_payload_bytes",
+    "coordl_owner_batch_fraction": "coordl_is_owner",
+}
 
 
 JOB_SUMMARY_COLUMNS = [
-    "system_name",
-    "workload_name",
-    "job_name",
-    "model_name",
-    "run_id",
-    "run_timestamp",
-    "num_jobs",
-    "dataset_id",
-    "dataset_uri",
-    "dataset_split",
-    "transform_name",
-    "batch_size",
-    "mode",
-    "steps_completed",
-    "measured_steps",
-    "warmup_steps",
-    "total_time_sec",
-    "samples_per_sec",
-    "batches_per_sec",
-    "avg_step_time_sec",
-    "avg_data_time_sec",
-    "avg_compute_time_sec",
-    "data_to_compute_ratio",
-    "data_bottleneck_percent",
-    "avg_h2d_time_sec",
-    "avg_forward_time_sec",
-    "avg_backward_time_sec",
-    "avg_optimizer_step_time_sec",
-    "avg_baseline_io_time_sec",
-    "avg_baseline_decode_time_sec",
-    "avg_baseline_transform_time_sec",
-    "avg_batchflow_worker_io_time_sec",
-    "avg_batchflow_worker_decode_time_sec",
-    "avg_batchflow_worker_transform_time_sec",
-    "avg_batchflow_worker_stack_time_sec",
-    "avg_batchflow_worker_serialize_time_sec",
-    "avg_batchflow_fetch_time_sec",
-    "avg_batchflow_coordinator_rpc_time_sec",
-    "avg_batchflow_coordinator_sleep_time_sec",
-    "avg_batchflow_coordinator_wait_total_time_sec",
-    "avg_batchflow_coordinator_pending_polls",
-    "avg_trainer_decode_time_sec",
-    "avg_trainer_pin_time_sec",
-    "avg_tensorsocket_wait_time_sec",
-    "tensorsocket_cache_hit_rate",
-    "avg_coordl_wait_time_sec",
-    "avg_coordl_deserialize_time_sec",
-    "avg_coordl_io_time_sec",
-    "avg_coordl_decode_time_sec",
-    "avg_coordl_transform_time_sec",
-    "avg_coordl_prep_time_sec",
-    "avg_coordl_payload_bytes",
-    "coordl_owner_batch_fraction",
+    "system_name", "workload_name", "job_name", "model_name",
+    "run_id", "run_timestamp", "num_jobs",
+    "dataset_id", "dataset_uri", "dataset_split", "transform_name",
+    "batch_size", "mode",
+    "total_steps", "completed_steps", "warmup_steps",
+    "total_time_sec", "samples_per_sec", "batches_per_sec",
+    "avg_step_time_sec", "avg_data_time_sec", "avg_compute_time_sec",
+    "data_to_compute_ratio", "data_bottleneck_percent",
+    *JOB_AVERAGE_METRICS.keys(),
 ]
 
 
+AGGREGATE_MEAN_METRICS = {
+    "avg_job_samples_per_sec": "samples_per_sec",
+    "avg_job_batches_per_sec": "batches_per_sec",
+    "avg_job_data_time_sec": "avg_load_batch_time_sec",
+    "avg_job_compute_time_sec": "avg_model_compute_time_sec",
+    "avg_job_step_time_sec": "avg_step_time_sec",
+}
+
+
 AGGREGATE_COLUMNS = [
-    "system_name",
-    "workload_name",
-    "run_id",
-    "run_timestamp",
-    "num_jobs",
-    "dataset_id",
-    "batch_size",
-    "aggregate_samples_per_sec",
-    "aggregate_batches_per_sec",
-    "mean_job_samples_per_sec",
-    "mean_job_batches_per_sec",
-    "mean_job_data_time_sec",
-    "mean_job_compute_time_sec",
-    "mean_job_step_time_sec",
-    "pricing_name",
-    "cost_resource_profile",
-    "hourly_cost_usd",
+    "system_name", "workload_name", "run_id", "run_timestamp",
+    "num_jobs", "dataset_id", "batch_size",
+    "aggregate_samples_per_sec", "aggregate_batches_per_sec",
+    *AGGREGATE_MEAN_METRICS.keys(),
+    "pricing_name", "cost_resource_profile", "hourly_cost_usd",
     "cost_efficiency_batches_per_dollar",
-    "ablation_stage",
-    "ablation_label",
-    "ablation_order",
-    "ablation_deployment",
-    "ablation_policy",
+    "ablation_stage", "ablation_label", "ablation_order",
+    "ablation_deployment", "ablation_policy",
 ]
 
 
@@ -157,18 +130,17 @@ def per_step_metrics_path_for_job(output_dir: Path, job_name: str) -> Path:
 
 
 def _ordered_fields(rows: list[dict[str, Any]], preferred: list[str]) -> list[str]:
-    seen: list[str] = []
-    for row in rows:
-        for key in row:
-            if key not in seen:
-                seen.append(key)
-
+    seen = list(dict.fromkeys(key for row in rows for key in row))
     return [key for key in preferred if key in seen] + [
         key for key in seen if key not in preferred
     ]
 
 
-def write_rows_csv(path: Path, rows: list[dict[str, Any]], preferred: list[str]) -> None:
+def write_rows_csv(
+    path: Path,
+    rows: list[dict[str, Any]],
+    preferred: list[str],
+) -> None:
     if not rows:
         return
 
@@ -193,6 +165,7 @@ class PerStepMetricsWriter:
         self.path = path
         self.flush_every_steps = max(1, flush_every_steps)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+
         self._file = None
         self._writer: csv.DictWriter | None = None
         self._rows_since_flush = 0
@@ -200,8 +173,12 @@ class PerStepMetricsWriter:
     def write_step(self, row: dict[str, Any]) -> None:
         if self._file is None:
             self._file = self.path.open("w", newline="", encoding="utf-8")
-            fields = _ordered_fields([row], PER_STEP_COLUMNS)
-            self._writer = csv.DictWriter(self._file, fieldnames=fields)
+            self._writer = csv.DictWriter(
+                self._file,
+                # fieldnames=PER_STEP_COLUMNS,
+                fieldnames=row.keys(),
+                extrasaction="ignore",
+            )
             self._writer.writeheader()
 
         assert self._writer is not None
@@ -213,24 +190,27 @@ class PerStepMetricsWriter:
             self._rows_since_flush = 0
 
     def close(self) -> None:
-        if self._file is not None:
-            self._file.flush()
-            self._file.close()
-            self._file = None
-            self._writer = None
+        if self._file is None:
+            return
+
+        self._file.flush()
+        self._file.close()
+        self._file = None
+        self._writer = None
+        self._rows_since_flush = 0
 
 
-def _float(row: dict[str, Any], key: str) -> float:
+def _as_float(row: dict[str, Any], key: str, default: float = 0.0) -> float:
     try:
-        return float(row.get(key, 0.0) or 0.0)
+        return float(row.get(key, default) or default)
     except (TypeError, ValueError):
-        return 0.0
+        return default
 
 
 def _average(rows: list[dict[str, Any]], key: str) -> float:
     if not rows:
         return 0.0
-    return sum(_float(row, key) for row in rows) / len(rows)
+    return sum(_as_float(row, key) for row in rows) / len(rows)
 
 
 def build_job_summary(
@@ -241,73 +221,59 @@ def build_job_summary(
     metadata: dict[str, Any],
 ) -> dict[str, Any]:
     rows = read_rows_csv(path)
-    measured = [row for row in rows if int(float(row.get("warmup", 0) or 0)) == 0]
+    completed = [row for row in rows if not bool(int(_as_float(row, "warmup")))]
 
-    total_time_sec = sum(_float(row, "step_time_sec") for row in measured)
-    total_samples = sum(_float(row, "batch_size") for row in measured)
-    avg_data = _average(measured, "data_time_sec")
-    avg_compute = _average(measured, "compute_time_sec")
+    total_time = sum(_as_float(row, "total_step_time_sec") for row in completed)
+    total_samples = sum(_as_float(row, "batch_size") for row in completed)
+    total_batches = len(completed)
+    avg_data = _average(completed, "total_load_batch_time_sec")
+    avg_compute = _average(completed, "total_model_compute_time_sec")
+    avg_step = _average(completed, "total_step_time_sec")
+
+    averages = {
+        output_name: _average(completed, source_name)
+        for output_name, source_name in JOB_AVERAGE_METRICS.items()
+    }
 
     return {
         **metadata,
-        "mode": mode,
-        "steps_completed": len(rows),
-        "measured_steps": len(measured),
+        "total_steps": len(rows),
         "warmup_steps": warmup_steps,
-        "total_time_sec": total_time_sec,
-        "samples_per_sec": total_samples / max(total_time_sec, 1e-12),
-        "batches_per_sec": len(measured) / max(total_time_sec, 1e-12),
-        "avg_step_time_sec": _average(measured, "step_time_sec"),
-        "avg_data_time_sec": avg_data,
-        "avg_compute_time_sec": avg_compute,
-        "data_to_compute_ratio": avg_data / max(avg_compute, 1e-12),
-        "data_bottleneck_percent": avg_data / max(avg_data + avg_compute, 1e-12),
-        "avg_h2d_time_sec": _average(measured, "h2d_time_sec"),
-        "avg_forward_time_sec": _average(measured, "forward_time_sec"),
-        "avg_backward_time_sec": _average(measured, "backward_time_sec"),
-        "avg_optimizer_step_time_sec": _average(measured, "optimizer_step_time_sec"),
-        "avg_baseline_io_time_sec": _average(measured, "baseline_io_time_sec"),
-        "avg_baseline_decode_time_sec": _average(measured, "baseline_decode_time_sec"),
-        "avg_baseline_transform_time_sec": _average(measured, "baseline_transform_time_sec"),
-        "avg_batchflow_worker_io_time_sec": _average(measured, "batchflow_worker_io_time_sec"),
-        "avg_batchflow_worker_decode_time_sec": _average(measured, "batchflow_worker_decode_time_sec"),
-        "avg_batchflow_worker_transform_time_sec": _average(measured, "batchflow_worker_transform_time_sec"),
-        "avg_batchflow_worker_stack_time_sec": _average(measured, "batchflow_worker_stack_time_sec"),
-        "avg_batchflow_worker_serialize_time_sec": _average(measured, "batchflow_worker_serialize_time_sec"),
-        "avg_batchflow_fetch_time_sec": _average(measured, "batchflow_fetch_time_sec"),
-        "avg_batchflow_coordinator_rpc_time_sec": _average(measured, "batchflow_coordinator_rpc_time_sec"),
-        "avg_batchflow_coordinator_sleep_time_sec": _average(measured, "batchflow_coordinator_sleep_time_sec"),
-        "avg_batchflow_coordinator_wait_total_time_sec": _average(measured, "batchflow_coordinator_wait_total_time_sec"),
-        "avg_batchflow_coordinator_pending_polls": _average(measured, "batchflow_coordinator_pending_polls"),
-        "avg_trainer_decode_time_sec": _average(measured, "trainer_decode_time_sec"),
-        "avg_trainer_pin_time_sec": _average(measured, "trainer_pin_time_sec"),
-        "avg_tensorsocket_wait_time_sec": _average(measured, "tensorsocket_wait_time_sec"),
-        "tensorsocket_cache_hit_rate": _average(measured, "tensorsocket_cache_hit"),
-        "avg_coordl_wait_time_sec": _average(measured, "coordl_wait_time_sec"),
-        "avg_coordl_deserialize_time_sec": _average(measured, "coordl_deserialize_time_sec"),
-        "avg_coordl_io_time_sec": _average(measured, "coordl_io_time_sec"),
-        "avg_coordl_decode_time_sec": _average(measured, "coordl_decode_time_sec"),
-        "avg_coordl_transform_time_sec": _average(measured, "coordl_transform_time_sec"),
-        "avg_coordl_prep_time_sec": _average(measured, "coordl_prep_time_sec"),
-        "avg_coordl_payload_bytes": _average(measured, "coordl_payload_bytes"),
-        "coordl_owner_batch_fraction": _average(measured, "coordl_is_owner"),
+        "measured_steps": total_batches,
+        "total_time_sec": total_time,
+        "samples_per_sec": total_samples / max(total_time, 1e-12),
+        "batches_per_sec": total_batches / max(total_time, 1e-12),
+        "avg_step_time_sec": avg_step,
+        "avg_load_batch_time_sec": avg_data,
+        "avg_model_compute_time_sec": avg_compute,
+        # "data_to_compute_ratio": avg_data / max(avg_compute, 1e-12),
+        # "data_bottleneck_percent": (
+        #     100.0 * avg_data / max(avg_data + avg_compute, 1e-12)
+        # ),
+        # **averages,
     }
 
 
 def _plain_dict(value: Any) -> dict[str, Any]:
     if value is None:
         return {}
+
     if OmegaConf.is_config(value):
-        return OmegaConf.to_container(value, resolve=True)  # type: ignore[return-value]
-    return dict(value)
+        value = OmegaConf.to_container(value, resolve=True)
+
+    if value is None:
+        return {}
+
+    if not isinstance(value, dict):
+        raise TypeError(f"Expected mapping, got {type(value).__name__}")
+
+    return value
 
 
-def _load_cost_metadata(cfg, aggregate_batches_per_sec: float) -> dict[str, Any]:
-    """Resolve fixed artifact pricing and compute run-level cost efficiency.
-
-    Cost is intentionally reported only at the aggregate/system level because
-    the infrastructure is shared by all concurrent jobs.
-    """
+def _load_cost_metadata(
+    cfg: Any,
+    aggregate_batches_per_sec: float,
+) -> dict[str, Any]:
     system_cfg = cfg.get("system")
     cost_cfg = _plain_dict(system_cfg.get("cost") if system_cfg else None)
 
@@ -316,19 +282,20 @@ def _load_cost_metadata(cfg, aggregate_batches_per_sec: float) -> dict[str, Any]
 
     ablation_cfg = _plain_dict(cfg.get("ablation"))
     ablation_enabled = bool(ablation_cfg.get("enabled", False))
+
     if ablation_enabled:
-        override = str(ablation_cfg.get("cost_resource_profile", "")).strip()
-        if override:
-            resource_profile = override
+        resource_profile = (
+            str(ablation_cfg.get("cost_resource_profile", "")).strip()
+            or resource_profile
+        )
 
     hourly_cost_usd = 0.0
-    batches_per_dollar = 0.0
 
     if pricing_name or resource_profile:
         if not pricing_name or not resource_profile:
             raise ValueError(
-                "cost reporting requires both system.cost.pricing and "
-                "system.cost.resource_profile"
+                "Cost reporting requires both system.cost.pricing "
+                "and system.cost.resource_profile"
             )
 
         pricing_path = (
@@ -337,17 +304,19 @@ def _load_cost_metadata(cfg, aggregate_batches_per_sec: float) -> dict[str, Any]
             / "pricing"
             / f"{pricing_name}.yaml"
         )
+
         if not pricing_path.exists():
             raise FileNotFoundError(
-                f"pricing config {pricing_name!r} not found at {pricing_path}"
+                f"Pricing config {pricing_name!r} not found at {pricing_path}"
             )
 
         pricing = OmegaConf.load(pricing_path)
         currency = str(pricing.get("currency", "USD")).upper()
+
         if currency != "USD":
             raise ValueError(
-                f"pricing config {pricing_path} uses currency={currency!r}; "
-                "aggregate_summary.csv currently reports USD costs"
+                f"Pricing config {pricing_path} uses currency={currency!r}; "
+                "expected USD"
             )
 
         hourly_prices = {
@@ -355,57 +324,61 @@ def _load_cost_metadata(cfg, aggregate_batches_per_sec: float) -> dict[str, Any]
             for name, value in _plain_dict(pricing.get("hourly_usd")).items()
         }
         profiles = _plain_dict(pricing.get("resource_profiles"))
+
         if resource_profile not in profiles:
             available = ", ".join(sorted(profiles)) or "<none>"
             raise KeyError(
-                f"unknown cost resource profile {resource_profile!r} in "
-                f"{pricing_path}. Available profiles: {available}"
+                f"Unknown cost resource profile {resource_profile!r}. "
+                f"Available profiles: {available}"
             )
 
-        resources = _plain_dict(profiles[resource_profile])
-        for resource, raw_count in resources.items():
+        for resource, raw_count in _plain_dict(profiles[resource_profile]).items():
             count = float(raw_count)
+
             if count < 0:
                 raise ValueError(
-                    f"resource count must be >= 0 for {resource!r}, got {count}"
+                    f"Resource count for {resource!r} must be >= 0, got {count}"
                 )
             if count == 0:
                 continue
             if resource not in hourly_prices:
                 raise KeyError(
-                    f"resource {resource!r} has no hourly price in {pricing_path}"
+                    f"Resource {resource!r} has no hourly price in {pricing_path}"
                 )
+
             hourly_cost_usd += count * hourly_prices[resource]
 
         if hourly_cost_usd <= 0:
             raise ValueError(
-                f"cost profile {resource_profile!r} has zero hourly cost"
+                f"Cost profile {resource_profile!r} has zero hourly cost"
             )
 
-        batches_per_dollar = (
-            float(aggregate_batches_per_sec) * 3600.0 / hourly_cost_usd
-        )
+    batches_per_dollar = (
+        aggregate_batches_per_sec * 3600.0 / hourly_cost_usd
+        if hourly_cost_usd > 0
+        else 0.0
+    )
 
     return {
-        "pricing_name": pricing_name,
-        "cost_resource_profile": resource_profile,
+        # "pricing_name": pricing_name,
+        # "cost_resource_profile": resource_profile,
         "hourly_cost_usd": hourly_cost_usd,
         "cost_efficiency_batches_per_dollar": batches_per_dollar,
-        "ablation_stage": (
-            str(ablation_cfg.get("stage", "")) if ablation_enabled else ""
-        ),
-        "ablation_label": (
-            str(ablation_cfg.get("label", "")) if ablation_enabled else ""
-        ),
-        "ablation_order": (
-            ablation_cfg.get("order", "") if ablation_enabled else ""
-        ),
-        "ablation_deployment": (
-            str(ablation_cfg.get("deployment", "")) if ablation_enabled else ""
-        ),
-        "ablation_policy": (
-            str(ablation_cfg.get("policy", "")) if ablation_enabled else ""
-        ),
+        # "ablation_stage": (
+        #     str(ablation_cfg.get("stage", "")) if ablation_enabled else ""
+        # ),
+        # "ablation_label": (
+        #     str(ablation_cfg.get("label", "")) if ablation_enabled else ""
+        # ),
+        # "ablation_order": (
+        #     ablation_cfg.get("order", "") if ablation_enabled else ""
+        # ),
+        # "ablation_deployment": (
+        #     str(ablation_cfg.get("deployment", "")) if ablation_enabled else ""
+        # ),
+        # "ablation_policy": (
+        #     str(ablation_cfg.get("policy", "")) if ablation_enabled else ""
+        # ),
     }
 
 
@@ -416,8 +389,8 @@ class ExperimentReporter:
         results_dir: Path,
         workload_name: str,
         system_name: str,
-        dataset_config,
-        cfg,
+        dataset_config: Any,
+        cfg: Any,
         run_id: str,
         run_timestamp: str,
     ) -> None:
@@ -433,45 +406,51 @@ class ExperimentReporter:
     def save_resolved_config(self) -> None:
         OmegaConf.save(
             config=self.cfg,
-            f=str(self.run_dir / "resolved_config.yaml"),
+            f=str(self.run_dir / "config.yaml"),
             resolve=True,
         )
 
-    def _job_metadata(self, job, num_jobs: int) -> dict[str, Any]:
+    def _job_metadata(self, job: Any, num_jobs: int) -> dict[str, Any]:
         return {
-            "system_name": self.system_name,
             "workload_name": self.workload_name,
             "job_name": job.name,
             "model_name": job.model_name,
-            "run_id": self.run_id,
-            "run_timestamp": self.run_timestamp,
-            "num_jobs": num_jobs,
-            "dataset_id": self.dataset.dataset_id,
-            "dataset_uri": self.dataset.prefix_uri,
-            "dataset_split": self.dataset.split,
+            # "run_id": self.run_id,
+            # "run_timestamp": self.run_timestamp,
+            # "num_jobs": num_jobs,
+            # "dataset_id": self.dataset.dataset_id,
+            # "dataset_uri": self.dataset.prefix_uri,
+            # "dataset_split": self.dataset.split,
             "transform_name": self.dataset.transform_name or "",
             "batch_size": self.dataset.batch_size,
         }
 
-    def write_summaries(self, *, jobs, mode: str) -> None:
+    def write_summaries(self, *, jobs: Any, mode: str) -> None:
+        jobs = list(jobs)
+        if not jobs:
+            raise ValueError("Cannot write summaries without any jobs")
+
         num_jobs = len(jobs)
-        job_rows: list[dict[str, Any]] = []
 
-        for job in jobs:
-            path = per_step_metrics_path_for_job(self.run_dir, job.name)
-            job_rows.append(
-                build_job_summary(
-                    path,
-                    mode=mode,
-                    warmup_steps=job.warmup_steps,
-                    metadata=self._job_metadata(job, num_jobs),
-                )
+        job_rows = [
+            build_job_summary(
+                per_step_metrics_path_for_job(self.run_dir, job.name),
+                mode=mode,
+                warmup_steps=job.warmup_steps,
+                metadata=self._job_metadata(job, num_jobs),
             )
+            for job in jobs
+        ]
 
-        write_rows_csv(self.run_dir / "job_summary.csv", job_rows, JOB_SUMMARY_COLUMNS)
+        write_rows_csv(
+            self.run_dir / "per_job_summary.csv",
+            job_rows,
+            job_rows[0].keys() #if job_rows else JOB_SUMMARY_COLUMNS,
+            # JOB_SUMMARY_COLUMNS,
+        )
 
-        aggregate_samples = sum(float(row["samples_per_sec"]) for row in job_rows)
-        aggregate_batches = sum(float(row["batches_per_sec"]) for row in job_rows)
+        aggregate_samples = sum(_as_float(row, "samples_per_sec") for row in job_rows)
+        aggregate_batches = sum(_as_float(row, "batches_per_sec") for row in job_rows)
 
         aggregate = {
             "system_name": self.system_name,
@@ -483,18 +462,12 @@ class ExperimentReporter:
             "batch_size": self.dataset.batch_size,
             "aggregate_samples_per_sec": aggregate_samples,
             "aggregate_batches_per_sec": aggregate_batches,
-            "mean_job_samples_per_sec": aggregate_samples / num_jobs,
-            "mean_job_batches_per_sec": aggregate_batches / num_jobs,
-            "mean_job_data_time_sec": sum(
-                float(row["avg_data_time_sec"]) for row in job_rows
-            ) / num_jobs,
-            "mean_job_compute_time_sec": sum(
-                float(row["avg_compute_time_sec"]) for row in job_rows
-            ) / num_jobs,
-            "mean_job_step_time_sec": sum(
-                float(row["avg_step_time_sec"]) for row in job_rows
-            ) / num_jobs,
+            # **{
+            #     output_name: _average(job_rows, source_name)
+            #     for output_name, source_name in AGGREGATE_MEAN_METRICS.items()
+            # },
         }
+
         aggregate.update(
             _load_cost_metadata(
                 self.cfg,
