@@ -13,6 +13,7 @@ role: all
 worker_host_id: null
 
 logging:
+  dir: batchflow/logs
   level: INFO
 
 hydra:

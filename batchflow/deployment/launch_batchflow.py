@@ -73,6 +73,7 @@ def setup_logging(
     base_dir: str | Path = "logs",
     level: str | int = "INFO",
 ) -> Path:
+    
     run_dir = Path(base_dir).resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -700,28 +701,15 @@ def _install_signal_handlers(handles: list[RuntimeHandle]) -> None:
     config_name="config",
 )
 def main(cfg: DictConfig) -> None:
-    run_dir_value = (
-        cfg.get("run_dir", None)
-        or cfg.get("runtime_dir", None)
-        or "logs/batchflow"
-    )
 
-    logging_cfg = cfg.get("logging", {})
-    log_level = (
-        logging_cfg.get("level", "INFO")
-        if logging_cfg is not None
-        else "INFO"
-    )
+    base_log_dir = cfg.logging.dir
+    log_level = cfg.logging.level
 
-    run_dir = setup_logging(
-        base_dir=run_dir_value,
-        level=log_level,
-    )
-
+    run_dir = setup_logging(base_dir=base_log_dir, level=log_level)
+    role = str(cfg.get("role", ROLE_ALL)).strip().lower()
     deployment_config = parse_deployment_config(cfg)
     dataset_config = parse_dataset_config(cfg)
 
-    role = str(cfg.get("role", ROLE_ALL)).strip().lower()
 
     raw_worker_host_id = cfg.get("worker_host_id", None)
     worker_host_id = (
