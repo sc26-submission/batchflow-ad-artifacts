@@ -1,7 +1,0 @@
-enabled: true
-stage: colocated_static
-label: Colocated-Static
-order: 0
-deployment: colocated
-policy: static
-cost_resource_profile: training_only

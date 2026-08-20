@@ -68,6 +68,9 @@ def _run_job(
             logger=logger,
         )
         logger.info("BatchFlow job complete")
+    except Exception as exc:
+            logger.exception("BatchFlow job failed", exc_info=exc)
+            raise exc
     finally:
         writer.close()
 

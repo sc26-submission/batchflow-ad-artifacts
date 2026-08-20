@@ -32,7 +32,7 @@ from experiments.runners.tensorsocket_runner import run_tensorsocket_jobs
 LOGGER = logging.getLogger("experiments.run_experiment")
 
 
-def _resolve_real_dataset_metadata(dataset: DatasetConfig) -> DatasetConfig:
+def _resolve_dataset_metadata(dataset: DatasetConfig) -> DatasetConfig:
     """Resolve counts using the canonical dataset builder."""
     if not dataset.prefix_uri.startswith("s3://"):
         return dataset
@@ -99,34 +99,6 @@ def _build_jobs(cfg: DictConfig) -> tuple[JobConfig, ...]:
 
 
 
-
-def _validate_ablation_config(cfg: DictConfig, *, runner_name: str) -> None:
-    ablation_cfg = cfg.get("ablation")
-    if ablation_cfg is None or not bool(ablation_cfg.get("enabled", False)):
-        return
-
-    if runner_name != "batchflow":
-        raise ValueError(
-            "ablation configs apply only to system=batchflow; "
-            f"got runner={runner_name!r}"
-        )
-
-    deployment = str(ablation_cfg.get("deployment", "")).strip()
-    policy = str(ablation_cfg.get("policy", "")).strip()
-    if not deployment or not policy:
-        raise ValueError(
-            "enabled ablation config must define deployment and policy"
-        )
-
-    LOGGER.info(
-        "Ablation stage=%s label=%s requires BatchFlow service "
-        "deployment=%s policy=%s",
-        ablation_cfg.get("stage", ""),
-        ablation_cfg.get("label", ""),
-        deployment,
-        policy,
-    )
-
 def _build_batchflow_config(cfg: DictConfig) -> BatchFlowTorchConfig:
     return BatchFlowTorchConfig(**_plain_dict(cfg.system.get("client")))
 
@@ -181,12 +153,11 @@ def main(cfg: DictConfig) -> None:
     configure_process_logging()
 
     system_name = str(cfg.system.name)
-    runner_name = str(cfg.system.get("runner", system_name))
     workload_name = str(cfg.workload.name)
-    _validate_ablation_config(cfg, runner_name=runner_name)
+    # _validate_ablation_config(cfg, runner_name=runner_name)
     jobs = _build_jobs(cfg)
     dataset = load_dataset_config(str(cfg.workload.dataset))
-    dataset = _resolve_real_dataset_metadata(dataset)
+    dataset = _resolve_dataset_metadata(dataset)
 
     OmegaConf.update(cfg, "resolved_dataset", asdict(dataset), force_add=True)
 
@@ -203,32 +174,32 @@ def main(cfg: DictConfig) -> None:
     reporter.save_resolved_config()
 
     LOGGER.info(
-        "Starting experiment system=%s runner=%s workload=%s dataset=%s jobs=%d",
-        system_name, runner_name, workload_name, dataset.dataset_id, len(jobs),
+        "Starting experiment system=%s workload=%s dataset=%s jobs=%d",
+        system_name, workload_name, dataset.dataset_id, len(jobs),
     )
 
-    if runner_name == "batchflow":
+    if system_name == "batchflow":
         run_batchflow_jobs(
             job_configs=jobs,
             dataset_config=dataset,
             batchflow_config=_build_batchflow_config(cfg),
             output_dir=reporter.run_dir,
         )
-    elif runner_name == "pytorch":
+    elif system_name == "pytorch":
         run_pytorch_jobs(
             job_configs=jobs,
             dataset_config=dataset,
             pytorch_config=_build_pytorch_config(cfg),
             output_dir=reporter.run_dir,
         )
-    elif runner_name == "tensorsocket":
+    elif system_name == "tensorsocket":
         run_tensorsocket_jobs(
             job_configs=jobs,
             dataset_config=dataset,
             tensorsocket_config=_build_tensorsocket_config(cfg),
             output_dir=reporter.run_dir,
         )
-    elif runner_name == "coordl":
+    elif system_name == "coordl":
         run_coordl_jobs(
             job_configs=jobs,
             dataset_config=dataset,
@@ -237,9 +208,7 @@ def main(cfg: DictConfig) -> None:
         )
     else:
         raise ValueError(
-            f"unsupported system runner={runner_name!r} "
-            f"for system.name={system_name!r}"
-        )
+            f"unsupported system={system_name!r} (expected one of 'batchflow', 'pytorch', 'tensorsocket', 'coordl')")
 
     reporter.write_summaries(jobs=jobs, mode=system_name)
     LOGGER.info("Experiment complete results=%s", reporter.run_dir.resolve())

@@ -1,7 +1,0 @@
-enabled: true
-stage: caching
-label: + Caching
-order: 3
-deployment: aws_disaggregated
-policy: full
-cost_resource_profile: disaggregated_cached

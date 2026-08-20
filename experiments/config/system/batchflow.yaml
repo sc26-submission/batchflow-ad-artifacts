@@ -1,5 +1,4 @@
 name: batchflow
-runner: batchflow
 
 cost:
   pricing: aws

@@ -1,7 +1,0 @@
-enabled: false
-stage: ""
-label: ""
-order: -1
-deployment: ""
-policy: ""
-cost_resource_profile: ""
