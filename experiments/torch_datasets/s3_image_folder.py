@@ -120,6 +120,7 @@ class S3ClassificationDataset(TorchDataset):
         return {
             "image": image_tensor,
             "label": sample.label,
+            "index": index,
             "source_uri": sample.uri,
             "class_name": sample.class_name,
             "io_time_sec": torch.tensor(io_time_sec, dtype=torch.float32),

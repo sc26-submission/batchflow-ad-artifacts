@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - dataset: imagenet
+  - dataset: cifar10
   - deployment: colocated
   - policy: full
   - override hydra/hydra_logging: disabled

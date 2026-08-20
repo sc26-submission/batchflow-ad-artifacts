@@ -12,5 +12,5 @@ redis:
 worker_hosts:
   - id: training-node
     hostname: 127.0.0.1
-    worker_count: 24
+    worker_count: 4
     worker_port_start: 60061
