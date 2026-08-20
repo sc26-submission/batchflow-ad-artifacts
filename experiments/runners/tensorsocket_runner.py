@@ -126,6 +126,8 @@ def _run_job(
             logger=logger,
         )
         logger.info("TensorSocket job complete")
+    except Exception as exc:
+            logger.exception("TensorSocket job failed", exc_info=exc)
     finally:
         consumer.close()
         writer.close()
@@ -192,6 +194,8 @@ def run_tensorsocket_jobs(
 
         if errors:
             raise RuntimeError("one or more TensorSocket jobs failed:\n" + "\n".join(errors))
+
+    
     finally:
         stop_event.set()
         producer.join(timeout=10.0)

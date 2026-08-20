@@ -266,6 +266,7 @@ class TensorProducer:
             raise TypeError("TensorSocket producer can only share tensor-valued batch fields")
 
         metrics = {
+            "batch_indices": batch.get("batch_indices", batch.get("index").tolist()),
             "io_time_sec": self._sum_metric(batch.get("io_time_sec")),
             "decode_time_sec": self._sum_metric(batch.get("decode_time_sec")),
             "transform_time_sec": self._sum_metric(batch.get("transform_time_sec")),

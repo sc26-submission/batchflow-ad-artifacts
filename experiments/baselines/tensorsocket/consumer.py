@@ -85,13 +85,14 @@ class TensorConsumer(Iterator[dict[str, Any]]):
         metrics = dict(message.get("metrics", {}))
         batch = dict(zip(tensor_keys, tensors))
         batch.update({
+            "batch_indices": metrics.get("batch_indices"),
             "io_time_sec": metrics.get("io_time_sec", 0.0),
             "decode_time_sec": metrics.get("decode_time_sec", 0.0),
             "transform_time_sec": metrics.get("transform_time_sec", 0.0),
             "tensorsocket_wait_time_sec": wait_time,
             "tensorsocket_cache_hit": int(cache_hit),
-            "batch_index": int(message.get("batch_index", -1)),
-            "epoch": int(message.get("epoch", 0)),
+            # "batch_index": int(message.get("batch_index", -1)),
+            # "epoch": int(message.get("epoch", 0)),
         })
         return batch
 
