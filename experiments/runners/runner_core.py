@@ -330,11 +330,30 @@ def run_training_loop(
             elif batch_id is None and isinstance(batch.get("batch_indices"), list):
                 batch_id = gen_batch_id(batch.get("batch_indices"))
 
-            batch_indices = batch.get("batch_indices") or batch.get("index").tolist()
 
-            batch_io_time = batch.get("io_time_sec") or float(batch.get("io_time_sec").sum().item())
-            batch_decode_time = batch.get("decode_time_sec") or float(batch.get("decode_time_sec").sum().item())
-            batch_transform_time = batch.get("transform_time_sec") or float(batch.get("transform_time_sec").sum().item())
+            batch_indices = batch.get("batch_indices")
+
+            if batch_indices is None:
+                batch_indices = batch.get("index")
+
+            if batch_indices is None:
+                batch_indices = batch.get("sample_id")
+
+            batch_indices = batch_indices.tolist() if hasattr(batch_indices, "tolist") else batch_indices or []
+
+            if batch.get("trainer_decode_time_sec") is not None:
+                # worker_io_time_sec =  float(batch.get("worker_io_time_sec").sum().item())
+                # worker_decode_time_sec = float(batch.get("worker_decode_time_sec").sum().item())
+                # worker_transform_time_sec = float(batch.get("worker_transform_time_sec").sum().item())
+
+                batch_io_time = batch.get("coordinator_wait_total_time_sec") + batch.get("fetch_time_sec")
+                batch_decode_time = batch.get("trainer_decode_time_sec")
+                batch_transform_time = batch.get("trainer_decode_time_sec")
+
+            else:
+                batch_io_time = batch.get("io_time_sec") or float(batch.get("io_time_sec").sum().item())
+                batch_decode_time = batch.get("decode_time_sec") or float(batch.get("decode_time_sec").sum().item())
+                batch_transform_time = batch.get("transform_time_sec") or float(batch.get("transform_time_sec").sum().item())
 
             row = {
                 "system": mode,

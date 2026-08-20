@@ -26,25 +26,14 @@ class BatchCoordinator:
         dataset: Dataset,
         job: Job,
         *,
-        share_batches_across_jobs: bool = True,
+        reuse_enabled: bool = True,
     ) -> list[Batch]:
         epoch = job.progress.epoch
         start_index = max(0, job.progress.next_batch_index)
+        lookahead = max(1, job.lookahead_batches or self.default_lookahead)
 
-        lookahead = max(
-            1,
-            job.lookahead_batches or self.default_lookahead,
-        )
-
-        epoch_plan = self._get_or_build_epoch_plan(
-            dataset=dataset,
-            epoch=epoch,
-        )
-
-        stop_index = min(
-            len(epoch_plan.sample_groups),
-            start_index + lookahead,
-        )
+        epoch_plan = self._get_or_build_epoch_plan(dataset=dataset, epoch=epoch)
+        stop_index = min(len(epoch_plan.sample_groups), start_index + lookahead)
 
         return [
             self._make_batch(
@@ -52,17 +41,12 @@ class BatchCoordinator:
                 epoch=epoch,
                 batch_index=batch_index,
                 samples=epoch_plan.sample_groups[batch_index],
-                job_id=None if share_batches_across_jobs else job.job_id,
+                job_id=None if reuse_enabled else job.job_id,
             )
             for batch_index in range(start_index, stop_index)
         ]
 
-    def _get_or_build_epoch_plan(
-        self,
-        *,
-        dataset: Dataset,
-        epoch: int,
-    ) -> EpochPlan:
+    def _get_or_build_epoch_plan(self, *, dataset: Dataset, epoch: int) -> EpochPlan:
         plan_id = self._epoch_plan_id(dataset.dataset_id, epoch)
 
         with self._lock:
@@ -110,7 +94,7 @@ class BatchCoordinator:
         groups: list[list[Sample]] = []
 
         for index in range(0, len(samples), batch_size):
-            group = samples[index : index + batch_size]
+            group = samples[index:index + batch_size]
 
             if len(group) < batch_size and drop_last:
                 break
@@ -119,7 +103,7 @@ class BatchCoordinator:
                 groups.append(group)
 
         return groups
-    
+
     def _make_batch(
         self,
         *,
@@ -129,13 +113,15 @@ class BatchCoordinator:
         samples: list[Sample],
         job_id: str | None = None,
     ) -> Batch:
+        batch_id = self._batch_id(
+            dataset_id=dataset.dataset_id,
+            epoch=epoch,
+            batch_index=batch_index,
+            job_id=job_id,
+        )
+
         return Batch(
-            batch_id=self._batch_id(
-                dataset_id=dataset.dataset_id,
-                epoch=epoch,
-                batch_index=batch_index,
-                job_id=job_id,
-            ),
+            batch_id=batch_id,
             dataset_id=dataset.dataset_id,
             epoch=epoch,
             batch_index=batch_index,
@@ -146,11 +132,12 @@ class BatchCoordinator:
             metadata=dict(dataset.metadata),
         )
 
-    def _epoch_plan_id(self, dataset_id: str, epoch: int) -> str:
+    @staticmethod
+    def _epoch_plan_id(dataset_id: str, epoch: int) -> str:
         return f"{dataset_id}:epoch-{epoch}"
 
+    @staticmethod
     def _batch_id(
-        self,
         *,
         dataset_id: str,
         epoch: int,
@@ -158,6 +145,4 @@ class BatchCoordinator:
         job_id: str | None = None,
     ) -> str:
         base = f"{dataset_id}:epoch-{epoch}:batch-{batch_index}"
-        if job_id:
-            return f"{base}:job-{job_id}"
-        return base
+        return f"{base}:job-{job_id}" if job_id else base

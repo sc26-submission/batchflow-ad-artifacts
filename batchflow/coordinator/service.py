@@ -7,6 +7,7 @@ from typing import Any
 
 from batchflow.cache.redis_store import RedisPayloadStore
 from batchflow.common.core import (
+    Batch,
     BatchHandle,
     BatchHandleStatus,
     CacheEntry,
@@ -67,9 +68,7 @@ class CoordinatorService:
         maintainer_interval_seconds: float = 0.01,
     ) -> None:
         self.store = CoordinatorStore()
-        self.batch_coordinator = BatchCoordinator(
-            default_lookahead=config.default_lookahead,
-        )
+        self.batch_coordinator = BatchCoordinator(default_lookahead=config.default_lookahead)
         self.scheduler = BatchflowScheduler(config=config.scheduler)
 
         self.redis_payload_store: RedisPayloadStore | None = None
@@ -85,14 +84,11 @@ class CoordinatorService:
                 key_prefix=redis_config.key_prefix,
             )
 
-        # Serializes cache admission/eviction decisions across concurrent worker
-        # completion RPCs. Trainer pin/unpin operations remain protected by the
-        # CoordinatorStore lock.
         self._cache_management_lock = threading.RLock()
-
         self._maintainer_interval_seconds = maintainer_interval_seconds
         self._wake_event = threading.Event()
         self._stop_event = threading.Event()
+
         self._maintainer_thread = threading.Thread(
             target=self._maintainer_loop,
             name="batchflow-coordinator-maintainer",
@@ -127,7 +123,6 @@ class CoordinatorService:
         )
 
         self.store.start_job(job)
-
         self._refresh_planned_window_if_needed(job.job_id, force=True)
         self._maintain_job(job.job_id)
         self._wake_event.set()
@@ -150,17 +145,12 @@ class CoordinatorService:
                 data_bottleneck_percent=runtime_feedback.data_bottleneck_percent,
                 avg_data_time_sec=runtime_feedback.avg_data_time_sec,
                 avg_compute_time_sec=runtime_feedback.avg_compute_time_sec,
-                avg_coordinator_wait_total_time_sec=(
-                    runtime_feedback.avg_coordinator_wait_total_time_sec
-                ),
-                avg_coordinator_pending_polls=(
-                    runtime_feedback.avg_coordinator_pending_polls
-                ),
+                avg_coordinator_wait_total_time_sec=runtime_feedback.avg_coordinator_wait_total_time_sec,
+                avg_coordinator_pending_polls=runtime_feedback.avg_coordinator_pending_polls,
             )
 
         job = self.store.get_job(job_id)
         self.store.note_get_next_batch_call(job_id)
-
         dataset = self.store.get_dataset(job.dataset_id)
 
         if job.status != JobStatus.ACTIVE:
@@ -170,11 +160,8 @@ class CoordinatorService:
                 status=BatchHandleStatus.FAILED,
                 payload_format=dataset.payload_format,
                 dataset_format=dataset.dataset_format,
-                metadata={
-                    "reason": f"job is not active: {job.status.value}",
-                },
+                metadata={"reason": f"job is not active: {job.status.value}"},
             )
-
             return GetNextBatchResult(
                 batch_handle=handle,
                 epoch=job.progress.epoch,
@@ -205,7 +192,6 @@ class CoordinatorService:
                 dataset_format=dataset.dataset_format,
                 metadata={"reason": "no planned batch available"},
             )
-
             return GetNextBatchResult(
                 batch_handle=handle,
                 epoch=job.progress.epoch,
@@ -217,8 +203,6 @@ class CoordinatorService:
         self.store.note_batch_handle_served(job_id, handle)
 
         if handle.is_ready:
-            # Pin before handing out the location so a benefit-aware eviction
-            # cannot delete the Redis object while this trainer is fetching it.
             self.store.touch_cache_entry(handle.cache_key)
             self.store.pin_cache_entry(handle.cache_key, job_id)
 
@@ -261,8 +245,8 @@ class CoordinatorService:
 
         if epoch > job.progress.epoch:
             raise ValueError(
-                f"commit epoch is ahead of job progress: job_id={job_id} "
-                f"current={job.progress.epoch} got={epoch}"
+                f"commit epoch is ahead of job progress: "
+                f"job_id={job_id} current={job.progress.epoch} got={epoch}"
             )
 
         job = self.store.commit_batch(
@@ -271,10 +255,7 @@ class CoordinatorService:
             batch_index=batch_index,
         )
 
-        # batch_id and cache_key are currently identical. Keeping the pin API
-        # cache-key based makes it straightforward to change that later.
         self.store.unpin_cache_entry(batch_id, job_id)
-
         self._wake_event.set()
         return job
 
@@ -285,11 +266,7 @@ class CoordinatorService:
         reason: str = "job finished",
         status: JobStatus = JobStatus.COMPLETED,
     ) -> FinishJobResult:
-        job = self.store.finish_job(
-            job_id,
-            reason=reason,
-            status=status,
-        )
+        job = self.store.finish_job(job_id, reason=reason, status=status)
 
         self.store.release_job_cache_pins(job_id)
         self.store.set_planned_window(job_id, [])
@@ -324,11 +301,7 @@ class CoordinatorService:
     ) -> MaterializeBatchTaskState | None:
         self.store.heartbeat_worker(worker_id)
 
-        task_state = self.scheduler.choose_next_task_for_worker(
-            worker_id,
-            self.store,
-        )
-
+        task_state = self.scheduler.choose_next_task_for_worker(worker_id, self.store)
         if task_state is None:
             return None
 
@@ -421,12 +394,7 @@ class CoordinatorService:
             },
         )
 
-        handle = self.scheduler.build_ready_handle(
-            batch=batch,
-            entry=entry,
-            store=self.store,
-        )
-
+        handle = self.scheduler.build_ready_handle(batch=batch, entry=entry, store=self.store)
         task_state = self.store.complete_task(
             task_id,
             cache_entry=entry,
@@ -439,7 +407,7 @@ class CoordinatorService:
     def _apply_cache_admission(
         self,
         *,
-        batch,
+        batch: Batch,
         size_bytes: int,
         location: str,
         expires_at_ms: int | None,
@@ -463,8 +431,6 @@ class CoordinatorService:
             for victim in victims:
                 evicted = self.store.evict_batch(victim.cache_key)
                 if evicted is None:
-                    # A trainer may have pinned this entry after victim
-                    # selection. Re-check capacity below before admitting.
                     continue
 
                 redis_key = str(evicted.metadata.get("fetch_key", ""))
@@ -479,27 +445,16 @@ class CoordinatorService:
                         )
 
                 LOGGER.info(
-                    "Evicted reusable cache entry cache_key=%s size_bytes=%s "
-                    "value=%.6f",
+                    "Evicted reusable cache entry cache_key=%s size_bytes=%s value=%.6f",
                     evicted.cache_key,
                     evicted.size_bytes,
                     self.scheduler.compute_cache_entry_value(evicted, self.store),
                 )
 
-            if capacity <= 0 or (
-                self.store.reusable_cache_bytes() + int(size_bytes) <= capacity
-            ):
+            if capacity <= 0 or self.store.reusable_cache_bytes() + int(size_bytes) <= capacity:
                 metadata["cache_admission"] = "admitted"
-                return (
-                    location,
-                    StorageClass.REUSABLE,
-                    expires_at_ms,
-                    metadata,
-                )
+                return location, StorageClass.REUSABLE, expires_at_ms, metadata
 
-        # No sufficient set of lower-value entries can make room. The worker
-        # keeps a short-lived local copy specifically so the current request can
-        # still be served without retaining the object in shared Redis.
         redis_key = str(metadata.get("fetch_key", ""))
         if redis_key:
             try:
@@ -520,21 +475,13 @@ class CoordinatorService:
         )
 
         if not fallback_host or fallback_port <= 0 or not fallback_key:
-            # This should only occur for an unexpected/orphan Redis object. Do
-            # not return a broken handle. Retain it and log that the configured
-            # logical bound could not be enforced for this completion.
             LOGGER.warning(
                 "Cannot reject Redis cache admission because worker fallback "
                 "metadata is missing batch_id=%s; retaining object",
                 batch.batch_id,
             )
             metadata["cache_admission"] = "forced_no_fallback"
-            return (
-                location,
-                StorageClass.REUSABLE,
-                expires_at_ms,
-                metadata,
-            )
+            return location, StorageClass.REUSABLE, expires_at_ms, metadata
 
         fallback_metadata = dict(metadata)
         fallback_metadata.update(
@@ -581,9 +528,7 @@ class CoordinatorService:
                 if self._schedule_opportunistic_prefetch():
                     did_work = True
             except Exception:
-                LOGGER.exception(
-                    "Coordinator opportunistic-prefetch pass failed"
-                )
+                LOGGER.exception("Coordinator opportunistic-prefetch pass failed")
 
             if did_work:
                 continue
@@ -601,8 +546,7 @@ class CoordinatorService:
             if self.store.cache_pin_count(entry.cache_key) > 0:
                 continue
 
-            evicted = self.store.evict_batch(entry.cache_key)
-            if evicted is not None:
+            if self.store.evict_batch(entry.cache_key) is not None:
                 removed = True
 
         return removed
@@ -615,67 +559,42 @@ class CoordinatorService:
             return False
 
         self._refresh_planned_window_if_needed(job_id)
-
         planned = self.store.get_planned_window(job_id)
 
         if not planned:
             return False
 
         target_depth = self.scheduler.target_lookahead_depth(job, self.store)
-        ready_or_inflight = 0
         considered = 0
         did_work = False
 
         for batch in planned:
             if batch.epoch != job.progress.epoch:
                 continue
-
             if batch.batch_index < job.progress.next_batch_index:
                 continue
-
             if considered >= target_depth:
                 break
+
             considered += 1
 
             if self.store.is_batch_ready(batch.batch_id):
-                ready_or_inflight += 1
                 continue
-
             if self.store.is_batch_in_progress(batch.batch_id):
-                ready_or_inflight += 1
                 continue
 
             if self.scheduler.should_materialize(batch, self.store):
-                task = self.scheduler.build_task(
-                    batch,
-                    job=job,
-                    store=self.store,
-                )
+                task = self.scheduler.build_task(batch, job=job, store=self.store)
                 self.store.create_task(task)
-                ready_or_inflight += 1
                 did_work = True
 
         return did_work
 
     def _schedule_opportunistic_prefetch(self) -> bool:
-        """
-        Use genuinely spare workers for extended-lookahead prefetching.
-
-        The normal per-job maintenance pass always runs first. This second pass
-        activates only when every active job has its immediate target lookahead
-        covered by READY or in-flight batches. It then considers batches between
-        d_j and 2*d_j (or the configured multiplier), ranks unique candidates by
-        the benefit-aware batch value V(b), and creates at most one task for each
-        currently spare worker slot.
-        """
-        if not self.scheduler.config.cache_enabled:
+        if not self.scheduler.config.reuse_enabled:
             return False
-
         if not self.scheduler.config.opportunistic_prefetch_enabled:
             return False
-
-        # Opportunistic prefetches are intended for the shared reusable cache.
-        # Keep the Redis-free local/demo path unchanged.
         if self.redis_payload_store is None:
             return False
 
@@ -683,21 +602,15 @@ class CoordinatorService:
         if not active_jobs:
             return False
 
-        # First protect immediate demand for every active trainer. Pending and
-        # running materializations count as coverage because workers have already
-        # been committed to producing those batches.
+        # Immediate trainer demand must be covered before spare workers prefetch.
         for job in active_jobs:
-            target_depth = self.scheduler.target_lookahead_depth(
-                job,
-                self.store,
-            )
+            target_depth = self.scheduler.target_lookahead_depth(job, self.store)
             covered = self.store.count_ready_or_inflight_in_window(
                 job.job_id,
                 epoch=job.progress.epoch,
                 start_batch_index=job.progress.next_batch_index,
                 limit=target_depth,
             )
-
             if covered < target_depth:
                 return False
 
@@ -705,40 +618,18 @@ class CoordinatorService:
         if idle_workers <= 0:
             return False
 
-        # Pending normal tasks will consume idle workers as soon as they poll.
-        # Subtract all already-pending work so this pass cannot build an
-        # opportunistic backlog larger than genuinely spare worker capacity.
-        spare_slots = max(
-            0,
-            idle_workers - self.store.count_pending_tasks(),
-        )
+        spare_slots = max(0, idle_workers - self.store.count_pending_tasks())
         if spare_slots <= 0:
             return False
 
-        multiplier = max(
-            1,
-            int(self.scheduler.config.extended_lookahead_multiplier),
-        )
-
-        # A cache key can appear in multiple jobs' extended lookaheads. Store
-        # one representative Batch object and compute one aggregate V(b).
-        candidates_by_cache_key: dict[str, tuple[float, Any]] = {}
+        multiplier = max(1, int(self.scheduler.config.extended_lookahead_multiplier))
+        candidates_by_cache_key: dict[str, tuple[float, Batch]] = {}
 
         for job in active_jobs:
-            target_depth = self.scheduler.target_lookahead_depth(
-                job,
-                self.store,
-            )
-            extended_depth = max(
-                target_depth,
-                multiplier * target_depth,
-            )
-
+            target_depth = self.scheduler.target_lookahead_depth(job, self.store)
+            extended_depth = max(target_depth, multiplier * target_depth)
             upcoming = self.store.next_uncommitted_batches(job.job_id)
 
-            # Positions [0, d_j) are immediate-demand work and are handled by
-            # _maintain_job(). Only the remainder of the extended lookahead is
-            # eligible for opportunistic prefetching.
             for batch in upcoming[target_depth:extended_depth]:
                 if not self.scheduler.can_opportunistically_prefetch(
                     batch,
@@ -749,11 +640,7 @@ class CoordinatorService:
                 if batch.cache_key in candidates_by_cache_key:
                     continue
 
-                value = self.scheduler.score_opportunistic_batch(
-                    batch,
-                    store=self.store,
-                )
-
+                value = self.scheduler.score_opportunistic_batch(batch, store=self.store)
                 if value <= 0.0:
                     continue
 
@@ -774,22 +661,16 @@ class CoordinatorService:
             if scheduled >= spare_slots:
                 break
 
-            # Re-check immediately before task creation because an earlier
-            # candidate in this pass may have created an in-flight entry.
             if not self.scheduler.can_opportunistically_prefetch(
                 batch,
                 store=self.store,
             ):
                 continue
 
-            task = self.scheduler.build_opportunistic_task(
-                batch,
-                store=self.store,
-            )
+            task = self.scheduler.build_opportunistic_task(batch, store=self.store)
             state = self.store.create_task(task)
 
             if state.task.task_id != task.task_id:
-                # A normal or opportunistic task for this batch appeared first.
                 continue
 
             scheduled += 1
@@ -823,7 +704,6 @@ class CoordinatorService:
         )
 
         planned = self.store.get_planned_window(job_id)
-
         future_batches = [
             batch
             for batch in planned
@@ -839,7 +719,7 @@ class CoordinatorService:
         new_batches = self.batch_coordinator.get_batches_for_job(
             dataset=dataset,
             job=job,
-            share_batches_across_jobs=self.scheduler.config.reuse_enabled
+            reuse_enabled=self.scheduler.config.reuse_enabled,
         )
 
         self.store.set_planned_window(job_id, new_batches)
@@ -848,6 +728,7 @@ class CoordinatorService:
 def _safe_int(value: object, *, default: int) -> int:
     if value in (None, ""):
         return default
+
     try:
         return int(value)
     except (TypeError, ValueError):
