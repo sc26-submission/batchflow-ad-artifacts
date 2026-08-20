@@ -323,21 +323,34 @@ def run_training_loop(
 
             elapsed_time = time.perf_counter() - run_start
 
+            batch_id = batch.get("batch_id")
+
+            if batch_id is None and isinstance(batch.get("index"), torch.Tensor):
+                batch_id = gen_batch_id(batch.get("index").tolist())
+            elif batch_id is None and isinstance(batch.get("batch_indices"), list):
+                batch_id = gen_batch_id(batch.get("batch_indices"))
+
+            batch_indices = batch.get("batch_indices") or batch.get("index").tolist()
+
+            batch_io_time = batch.get("io_time_sec") or float(batch.get("io_time_sec").sum().item())
+            batch_decode_time = batch.get("decode_time_sec") or float(batch.get("decode_time_sec").sum().item())
+            batch_transform_time = batch.get("transform_time_sec") or float(batch.get("transform_time_sec").sum().item())
+
             row = {
                 "system": mode,
                 "job_id": str(batch.get("job_id") or job_id),
                 "device": str(device),
                 "batch": loop_batch,
                 "warmup": int(is_warmup),
-                "batch_id": batch.get("batch_id", gen_batch_id(batch.get("index").tolist())),
+                "batch_id": batch_id,
                 "batch_size": batch_size,
-                "batch_indices": batch.get("index").tolist(),
+                "batch_indices": batch_indices,
                 "total_batch_time_sec": batch_time,
                 "total_load_batch_time_sec": data_time,
                 "total_model_compute_time_sec": compute_time,
-                "batch_io_time_sec": float(batch.get("io_time_sec").sum().item()),
-                "batch_decode_time_sec": float(batch.get("decode_time_sec").sum().item()),
-                "batch_transform_time_sec": float(batch.get("transform_time_sec").sum().item()),
+                "batch_io_time_sec": batch_io_time,
+                "batch_decode_time_sec": batch_decode_time,
+                "batch_transform_time_sec": batch_transform_time,
                 "forward_pass_time_sec": forward_time,
                 "backward_pass_time_sec": backward_time,
                 "optimizer_step_time_sec": optimizer_time,

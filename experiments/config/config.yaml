@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - system: pytorch #pytorch, tensorflow. batchflow
+  - system: coordl #pytorch, coordl, batchflow
   - workload: cifar10_4j_mixed #cifar10_1j_resnet18, imagenet_1j_resnet18
   - ablation: none
   - override hydra/hydra_logging: disabled

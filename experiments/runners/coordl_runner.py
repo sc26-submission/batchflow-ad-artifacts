@@ -96,6 +96,9 @@ def _run_job(
             logger=logger,
         )
         logger.info("CoorDL job complete")
+    except Exception as exc:
+        logger.exception("CoorDL job failed", exc_info=exc)
+        raise exc
     finally:
         writer.close()
 

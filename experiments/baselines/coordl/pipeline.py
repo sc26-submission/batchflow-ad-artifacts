@@ -96,11 +96,12 @@ def _serialize_batch(
 
     payload = {
         **data,
-        "coordl_io_time_sec": _sum_metric(batch, "io_time_sec"),
-        "coordl_decode_time_sec": _sum_metric(batch, "decode_time_sec"),
-        "coordl_transform_time_sec": _sum_metric(batch, "transform_time_sec"),
-        "coordl_prep_time_sec": prep_time_sec,
-        "coordl_owner_job_index": entry.owner_index,
+        "batch_indices": batch.get("index").tolist(),
+        "io_time_sec": _sum_metric(batch, "io_time_sec"),
+        "decode_time_sec": _sum_metric(batch, "decode_time_sec"),
+        "transform_time_sec": _sum_metric(batch, "transform_time_sec"),
+        "prep_time_sec": prep_time_sec,
+        "owner_job_index": entry.owner_index,
     }
 
     buffer = BytesIO()
