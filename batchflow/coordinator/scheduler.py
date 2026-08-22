@@ -7,8 +7,8 @@ from batchflow.common.core import (
     Batch,
     BatchHandle,
     BatchHandleStatus,
-    CacheEntry,
-    CacheStatus,
+    PayloadEntry,
+    PayloadStatus,
     Job,
     MaterializeBatchTask,
     MaterializeBatchTaskStatus,
@@ -86,12 +86,12 @@ class BatchflowScheduler:
         coverage = min(1.0, float(ready_ahead) / float(target_depth))
         metrics = store.get_job_metrics(job.job_id)
 
-        if metrics.last_commit_at_ms is None:
+        if metrics.last_acknowledged_at_ms is None:
             stall_seconds = 1.0
         else:
             stall_seconds = max(
                 0.0,
-                (now_ms() - metrics.last_commit_at_ms) / 1000.0,
+                (now_ms() - metrics.last_acknowledged_at_ms) / 1000.0,
             )
 
         return (
@@ -116,14 +116,14 @@ class BatchflowScheduler:
         )
         proximity = 1.0 / (1.0 + distance)
 
-        cache_entry = (
-            store.get_cache_entry(batch.cache_key)
+        payload_entry = (
+            store.get_payload_entry(batch.cache_key)
             if self.config.reuse_enabled
             else None
         )
         is_cached = (
-            cache_entry is not None
-            and cache_entry.status == CacheStatus.AVAILABLE
+            payload_entry is not None
+            and payload_entry.status == PayloadStatus.AVAILABLE
         )
 
         ready_bonus = self.config.ready_cache_bonus if is_cached else 0.0
@@ -185,9 +185,9 @@ class BatchflowScheduler:
             store=store,
         )
 
-    def compute_cache_entry_value(
+    def compute_payload_value(
         self,
-        entry: CacheEntry,
+        entry: PayloadEntry,
         store: CoordinatorStore,
     ) -> float:
         dataset_id = str(entry.metadata.get("dataset_id", ""))
@@ -220,7 +220,7 @@ class BatchflowScheduler:
 
             target_depth = self.target_lookahead_depth(job, store)
             extended_depth = max(1, multiplier * target_depth)
-            upcoming = store.next_uncommitted_batches(job.job_id)[:extended_depth]
+            upcoming = store.upcoming_batches(job.job_id)[:extended_depth]
 
             position: int | None = None
             for index, candidate in enumerate(upcoming):
@@ -257,71 +257,6 @@ class BatchflowScheduler:
             * preparation_time
             * (1.0 + self.config.batch_value_beta * input_shortage)
         )
-
-    def choose_cache_evictions(
-        self,
-        *,
-        incoming_batch: Batch,
-        incoming_size_bytes: int,
-        store: CoordinatorStore,
-    ) -> list[CacheEntry] | None:
-        """
-        Return lower-value unpinned victims needed to admit `incoming_batch`.
-
-        [] means there is already enough room (or capacity is unbounded).
-        None means the incoming object should not be retained in Redis.
-        """
-        if not self.config.reuse_enabled:
-            return None
-
-        capacity = int(self.config.cache_capacity_bytes)
-        incoming_size_bytes = max(0, int(incoming_size_bytes))
-
-        if capacity <= 0:
-            return []
-
-        if incoming_size_bytes > capacity:
-            return None
-
-        used_bytes = store.reusable_cache_bytes()
-        required_bytes = used_bytes + incoming_size_bytes - capacity
-
-        if required_bytes <= 0:
-            return []
-
-        incoming_value = self.compute_batch_value(incoming_batch, store)
-        candidates: list[tuple[float, CacheEntry]] = []
-
-        for entry in store.list_reusable_cache_entries():
-            if store.cache_pin_count(entry.cache_key) > 0:
-                continue
-
-            value = self.compute_cache_entry_value(entry, store)
-
-            # Retain an incoming object only by replacing strictly lower-value
-            # entries, as described by the BatchFlow cache policy.
-            if value < incoming_value:
-                candidates.append((value, entry))
-
-        candidates.sort(
-            key=lambda item: (
-                item[0],
-                item[1].last_accessed_at_ms,
-                item[1].cache_key,
-            )
-        )
-
-        victims: list[CacheEntry] = []
-        freed_bytes = 0
-
-        for _, entry in candidates:
-            victims.append(entry)
-            freed_bytes += max(0, int(entry.size_bytes))
-
-            if freed_bytes >= required_bytes:
-                return victims
-
-        return None
 
     # ------------------------------------------------------------------
     # Opportunistic prefetching
@@ -361,36 +296,7 @@ class BatchflowScheduler:
         if store.is_batch_in_progress(batch.batch_id):
             return False
 
-        value = self.compute_batch_value(batch, store)
-        if value <= 0.0:
-            return False
-
-        capacity = int(self.config.cache_capacity_bytes)
-        if capacity <= 0:
-            return True
-
-        estimated_size = int(
-            round(
-                store.get_payload_size_estimate(
-                    batch.dataset_id,
-                    default=0.0,
-                )
-            )
-        )
-
-        # Before any payload-size observation exists, allow the first candidate
-        # only while the cache is not already at its configured logical bound.
-        if estimated_size <= 0:
-            return store.reusable_cache_bytes() < capacity
-
-        return (
-            self.choose_cache_evictions(
-                incoming_batch=batch,
-                incoming_size_bytes=estimated_size,
-                store=store,
-            )
-            is not None
-        )
+        return self.compute_batch_value(batch, store) > 0.0
 
     def build_opportunistic_task(
         self,
@@ -444,7 +350,7 @@ class BatchflowScheduler:
             return None
 
         job = store.get_job(job_id)
-        candidates = store.next_uncommitted_batches(job_id)
+        candidates = store.upcoming_batches(job_id)
 
         if not candidates:
             return None
@@ -501,9 +407,9 @@ class BatchflowScheduler:
                     metadata={"task_id": task_state.task.task_id},
                 )
 
-        entry = store.get_cache_entry(batch.cache_key)
+        entry = store.get_payload_entry(batch.cache_key)
 
-        if entry is not None and entry.status == CacheStatus.FAILED:
+        if entry is not None and entry.status == PayloadStatus.FAILED:
             return self._failed_handle(
                 batch,
                 store=store,
@@ -511,7 +417,7 @@ class BatchflowScheduler:
                 reason=str(
                     entry.metadata.get(
                         "failure_reason",
-                        "cache entry failed",
+                        "payload preparation failed",
                     )
                 ),
             )
@@ -623,7 +529,7 @@ class BatchflowScheduler:
         self,
         *,
         batch: Batch,
-        entry: CacheEntry,
+        entry: PayloadEntry,
         store: CoordinatorStore,
     ) -> BatchHandle:
         dataset = store.get_dataset(batch.dataset_id)
@@ -725,7 +631,7 @@ class BatchflowScheduler:
 
 
 def _payload_format_from_entry(
-    entry: CacheEntry,
+    entry: PayloadEntry,
     *,
     default: PayloadFormat,
 ) -> PayloadFormat:

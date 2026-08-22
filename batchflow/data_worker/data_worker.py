@@ -157,7 +157,7 @@ class DataWorker:
                 self._maybe_heartbeat()
                 self._maybe_cleanup_payload_store()
 
-                resp = self.coordinator_client.poll_materialize_batch_task(self.worker_id)
+                resp = self.coordinator_client.poll_materialization_task(self.worker_id)
 
                 if not resp.has_task:
                     time.sleep(self.poll_interval_seconds)
@@ -213,7 +213,7 @@ class DataWorker:
                         redis_key = self.redis_payload_store.make_key(fetch_key)
                         payload_bytes = self.redis_payload_store.size_bytes(key=fetch_key)
 
-                        self.coordinator_client.complete_materialize_batch_task(
+                        self.coordinator_client.complete_materialization(
                             task_id=task_id,
                             worker_id=self.worker_id,
                             location=self.redis_payload_store.location,
@@ -241,7 +241,7 @@ class DataWorker:
                     existing_entry = self.local_payload_store.get(key=fetch_key)
 
                     if existing_entry is not None:
-                        self.coordinator_client.complete_materialize_batch_task(
+                        self.coordinator_client.complete_materialization(
                             task_id=task_id,
                             worker_id=self.worker_id,
                             location=f"grpc://{self.fetch_host}:{self.fetch_port}",
@@ -311,7 +311,7 @@ class DataWorker:
                         fallback_expires_at_ms,
                     )
 
-                    self.coordinator_client.complete_materialize_batch_task(
+                    self.coordinator_client.complete_materialization(
                         task_id=task_id,
                         worker_id=self.worker_id,
                         location=self.redis_payload_store.location,
@@ -356,7 +356,7 @@ class DataWorker:
                         evict_after_ms,
                     )
 
-                    self.coordinator_client.complete_materialize_batch_task(
+                    self.coordinator_client.complete_materialization(
                         task_id=task_id,
                         worker_id=self.worker_id,
                         location=f"grpc://{self.fetch_host}:{self.fetch_port}",
@@ -395,7 +395,7 @@ class DataWorker:
 
                 if task_id is not None:
                     try:
-                        self.coordinator_client.fail_materialize_batch_task(
+                        self.coordinator_client.fail_materialization(
                             task_id=task_id,
                             worker_id=self.worker_id,
                             reason=str(exc),

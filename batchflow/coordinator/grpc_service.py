@@ -95,9 +95,10 @@ class CoordinatorServiceServicer(batchflow_pb2_grpc.CoordinatorServiceServicer):
             context.abort(grpc.StatusCode.INTERNAL, str(exc))
             
 
+    # Legacy protobuf RPC name; the Python service API calls this acknowledge_batch.
     def CommitBatch(self, request, context):
         try:
-            job = self.coordinator_service.commit_batch(
+            job = self.coordinator_service.acknowledge_batch(
                 job_id=request.job_id,
                 batch_id=request.batch_id,
                 epoch=int(request.epoch),
@@ -157,7 +158,7 @@ class CoordinatorServiceServicer(batchflow_pb2_grpc.CoordinatorServiceServicer):
 
     def PollMaterializeBatchTask(self, request, context):
         try:
-            task_state = self.coordinator_service.poll_materialize_batch_task(
+            task_state = self.coordinator_service.poll_materialization_task(
                 worker_id=request.worker_id,
             )
 
@@ -175,7 +176,7 @@ class CoordinatorServiceServicer(batchflow_pb2_grpc.CoordinatorServiceServicer):
 
     def CompleteMaterializeBatchTask(self, request, context):
         try:
-            task_state = self.coordinator_service.complete_materialize_batch_task(
+            task_state = self.coordinator_service.complete_materialization(
                 task_id=request.task_id,
                 worker_id=request.worker_id,
                 location=request.location,
@@ -198,7 +199,7 @@ class CoordinatorServiceServicer(batchflow_pb2_grpc.CoordinatorServiceServicer):
 
     def FailMaterializeBatchTask(self, request, context):
         try:
-            task_state = self.coordinator_service.fail_materialize_batch_task(
+            task_state = self.coordinator_service.fail_materialization(
                 task_id=request.task_id,
                 reason=request.reason,
             )

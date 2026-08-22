@@ -8,8 +8,8 @@ from batchflow.common.core import (
     Batch,
     BatchHandle,
     BatchHandleStatus,
-    CacheEntry,
-    CacheStatus,
+    PayloadEntry,
+    PayloadStatus,
     Dataset,
     Job,
     JobProgress,
@@ -64,7 +64,7 @@ class JobMetrics:
     cache_in_flight: int = 0
     cache_failures: int = 0
     materializations: int = 0
-    last_commit_at_ms: int | None = None
+    last_acknowledged_at_ms: int | None = None
 
     data_bottleneck_percent: float = 0.0
     avg_data_time_sec: float = 0.0
@@ -75,6 +75,8 @@ class JobMetrics:
 
 
 class CoordinatorStore:
+    """In-memory control-plane state for jobs, workers, tasks, and payload metadata."""
+
     def __init__(self) -> None:
         self._lock = threading.RLock()
 
@@ -85,7 +87,7 @@ class CoordinatorStore:
         self._tasks: dict[str, MaterializeBatchTaskState] = {}
         self._tasks_by_batch_id: dict[str, str] = {}
 
-        self._cache_entries: dict[str, CacheEntry] = {}
+        self._payload_entries: dict[str, PayloadEntry] = {}
         self._batch_handles: dict[str, BatchHandle] = {}
 
         self._workers: dict[str, Worker] = {}
@@ -96,10 +98,10 @@ class CoordinatorStore:
         self._preparation_time_ema: dict[str, float] = {}
         self._payload_size_ema: dict[str, float] = {}
 
-        # A cached object must not be physically evicted while a trainer has
-        # been given a handle to it but has not yet committed that batch.
-        self._cache_pins: dict[str, set[str]] = {}
-        self._job_cache_pins: dict[str, set[str]] = {}
+        # A payload stays pinned while a client is fetching it. Once the client
+        # acknowledges the fetch, the payload can participate in eviction again.
+        self._payload_pins: dict[str, set[str]] = {}
+        self._job_payload_pins: dict[str, set[str]] = {}
 
     def register_dataset(self, dataset: Dataset) -> None:
         with self._lock:
@@ -379,7 +381,7 @@ class CoordinatorStore:
                     return batch
             return None
 
-    def next_uncommitted_batches(self, job_id: str) -> list[Batch]:
+    def upcoming_batches(self, job_id: str) -> list[Batch]:
         with self._lock:
             job = self.get_job(job_id)
 
@@ -446,7 +448,7 @@ class CoordinatorStore:
 
             return count
 
-    def commit_batch(
+    def acknowledge_batch(
         self,
         *,
         job_id: str,
@@ -454,10 +456,10 @@ class CoordinatorStore:
         batch_index: int,
     ) -> Job:
         """
-        Confirm that a previously issued batch was consumed.
+        Record that the client successfully fetched a previously issued batch.
 
-        This intentionally does not advance next_batch_index. Batches are advanced
-        when a READY handle is issued by GetNextBatch.
+        This does not advance next_batch_index. Progress advances when a READY
+        handle is issued by GetNextBatch; acknowledgement only releases the pin.
         """
         with self._lock:
             job = self.get_job(job_id)
@@ -469,7 +471,7 @@ class CoordinatorStore:
             )
 
             metrics = self.get_job_metrics(job_id)
-            metrics.last_commit_at_ms = now_ms()
+            metrics.last_acknowledged_at_ms = now_ms()
 
             return job
 
@@ -560,10 +562,10 @@ class CoordinatorStore:
             self._tasks[task.task_id] = state
             self._tasks_by_batch_id[task.batch.batch_id] = task.task_id
 
-            if task.batch.cache_key not in self._cache_entries:
-                self._cache_entries[task.batch.cache_key] = CacheEntry(
+            if task.batch.cache_key not in self._payload_entries:
+                self._payload_entries[task.batch.cache_key] = PayloadEntry(
                     cache_key=task.batch.cache_key,
-                    status=CacheStatus.PENDING,
+                    status=PayloadStatus.PENDING,
                     storage_class=task.storage_class,
                     metadata={
                         "batch_id": task.batch.batch_id,
@@ -574,10 +576,10 @@ class CoordinatorStore:
                     },
                 )
             else:
-                entry = self._cache_entries[task.batch.cache_key]
+                entry = self._payload_entries[task.batch.cache_key]
 
-                if entry.status == CacheStatus.FAILED:
-                    entry.status = CacheStatus.PENDING
+                if entry.status == PayloadStatus.FAILED:
+                    entry.status = PayloadStatus.PENDING
                     entry.metadata.pop("failure_reason", None)
 
             return state
@@ -629,7 +631,7 @@ class CoordinatorStore:
         self,
         task_id: str,
         *,
-        cache_entry: CacheEntry,
+        payload_entry: PayloadEntry,
         batch_handle: BatchHandle,
     ) -> MaterializeBatchTaskState:
         with self._lock:
@@ -641,7 +643,7 @@ class CoordinatorStore:
                 if worker is not None:
                     worker.active_task_ids.discard(task_id)
 
-            self._cache_entries[cache_entry.cache_key] = cache_entry
+            self._payload_entries[payload_entry.cache_key] = payload_entry
             self._batch_handles[task_state.task.batch.batch_id] = batch_handle
 
             job_id = task_state.task.job_id
@@ -661,24 +663,24 @@ class CoordinatorStore:
                     worker.active_task_ids.discard(task_id)
 
             cache_key = task_state.task.batch.cache_key
-            entry = self._cache_entries.get(cache_key)
+            entry = self._payload_entries.get(cache_key)
 
             if entry is not None:
-                entry.status = CacheStatus.FAILED
+                entry.status = PayloadStatus.FAILED
                 entry.metadata["failure_reason"] = reason
 
             return task_state
 
-    def list_cache_entries(self) -> list[CacheEntry]:
+    def list_payload_entries(self) -> list[PayloadEntry]:
         with self._lock:
-            return list(self._cache_entries.values())
+            return list(self._payload_entries.values())
 
-    def list_reusable_cache_entries(self) -> list[CacheEntry]:
+    def list_reusable_payload_entries(self) -> list[PayloadEntry]:
         with self._lock:
             return [
                 entry
-                for entry in self._cache_entries.values()
-                if entry.status == CacheStatus.AVAILABLE
+                for entry in self._payload_entries.values()
+                if entry.status == PayloadStatus.AVAILABLE
                 and entry.storage_class.value == "reusable"
                 and (entry.location or "").startswith(("redis://", "rediss://"))
             ]
@@ -687,57 +689,57 @@ class CoordinatorStore:
         with self._lock:
             return sum(
                 max(0, int(entry.size_bytes))
-                for entry in self._cache_entries.values()
-                if entry.status == CacheStatus.AVAILABLE
+                for entry in self._payload_entries.values()
+                if entry.status == PayloadStatus.AVAILABLE
                 and entry.storage_class.value == "reusable"
                 and (entry.location or "").startswith(("redis://", "rediss://"))
             )
 
-    def pin_cache_entry(self, cache_key: str, job_id: str) -> None:
+    def pin_payload(self, cache_key: str, job_id: str) -> None:
         with self._lock:
-            if cache_key not in self._cache_entries:
+            if cache_key not in self._payload_entries:
                 return
 
-            self._cache_pins.setdefault(cache_key, set()).add(job_id)
-            self._job_cache_pins.setdefault(job_id, set()).add(cache_key)
+            self._payload_pins.setdefault(cache_key, set()).add(job_id)
+            self._job_payload_pins.setdefault(job_id, set()).add(cache_key)
 
-    def unpin_cache_entry(self, cache_key: str, job_id: str) -> None:
+    def unpin_payload(self, cache_key: str, job_id: str) -> None:
         with self._lock:
-            jobs = self._cache_pins.get(cache_key)
+            jobs = self._payload_pins.get(cache_key)
             if jobs is not None:
                 jobs.discard(job_id)
                 if not jobs:
-                    self._cache_pins.pop(cache_key, None)
+                    self._payload_pins.pop(cache_key, None)
 
-            keys = self._job_cache_pins.get(job_id)
+            keys = self._job_payload_pins.get(job_id)
             if keys is not None:
                 keys.discard(cache_key)
                 if not keys:
-                    self._job_cache_pins.pop(job_id, None)
+                    self._job_payload_pins.pop(job_id, None)
 
-    def cache_pin_count(self, cache_key: str) -> int:
+    def payload_pin_count(self, cache_key: str) -> int:
         with self._lock:
-            return len(self._cache_pins.get(cache_key, set()))
+            return len(self._payload_pins.get(cache_key, set()))
 
-    def release_job_cache_pins(self, job_id: str) -> None:
+    def release_job_payload_pins(self, job_id: str) -> None:
         with self._lock:
-            cache_keys = list(self._job_cache_pins.pop(job_id, set()))
+            cache_keys = list(self._job_payload_pins.pop(job_id, set()))
 
             for cache_key in cache_keys:
-                jobs = self._cache_pins.get(cache_key)
+                jobs = self._payload_pins.get(cache_key)
                 if jobs is None:
                     continue
                 jobs.discard(job_id)
                 if not jobs:
-                    self._cache_pins.pop(cache_key, None)
+                    self._payload_pins.pop(cache_key, None)
 
-    def evict_batch(self, cache_key: str) -> CacheEntry | None:
-        """Remove coordinator metadata so an evicted batch can be rematerialized."""
+    def remove_payload(self, cache_key: str) -> PayloadEntry | None:
+        """Remove coordinator state for a payload so it can be materialized again."""
         with self._lock:
-            if self.cache_pin_count(cache_key) > 0:
+            if self.payload_pin_count(cache_key) > 0:
                 return None
 
-            entry = self._cache_entries.pop(cache_key, None)
+            entry = self._payload_entries.pop(cache_key, None)
             if entry is None:
                 return None
 
@@ -748,31 +750,31 @@ class CoordinatorStore:
             if task_id is not None:
                 self._tasks.pop(task_id, None)
 
-            self._cache_pins.pop(cache_key, None)
-            for job_id, keys in list(self._job_cache_pins.items()):
+            self._payload_pins.pop(cache_key, None)
+            for job_id, keys in list(self._job_payload_pins.items()):
                 keys.discard(cache_key)
                 if not keys:
-                    self._job_cache_pins.pop(job_id, None)
+                    self._job_payload_pins.pop(job_id, None)
 
             return entry
 
-    def put_cache_entry(self, entry: CacheEntry) -> None:
+    def put_payload_entry(self, entry: PayloadEntry) -> None:
         with self._lock:
-            self._cache_entries[entry.cache_key] = entry
+            self._payload_entries[entry.cache_key] = entry
 
-    def get_cache_entry(self, cache_key: str) -> CacheEntry | None:
+    def get_payload_entry(self, cache_key: str) -> PayloadEntry | None:
         with self._lock:
-            return self._cache_entries.get(cache_key)
+            return self._payload_entries.get(cache_key)
 
-    def touch_cache_entry(self, cache_key: str) -> None:
+    def touch_payload(self, cache_key: str) -> None:
         with self._lock:
-            entry = self._cache_entries.get(cache_key)
+            entry = self._payload_entries.get(cache_key)
             if entry is not None:
                 entry.touch()
 
-    def delete_cache_entry(self, cache_key: str) -> None:
+    def delete_payload_entry(self, cache_key: str) -> None:
         with self._lock:
-            self._cache_entries.pop(cache_key, None)
+            self._payload_entries.pop(cache_key, None)
 
     def put_batch_handle(self, batch_id: str, handle: BatchHandle) -> None:
         with self._lock:

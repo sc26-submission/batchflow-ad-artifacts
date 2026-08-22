@@ -7,6 +7,7 @@ service CoordinatorService {
 
   rpc StartJob(StartJobRequest) returns (StartJobResponse);
   rpc GetNextBatch(GetNextBatchRequest) returns (GetNextBatchResponse);
+  // Legacy wire name: Python APIs call this acknowledge_batch.
   rpc CommitBatch(CommitBatchRequest) returns (CommitBatchResponse);
   rpc FinishJob(FinishJobRequest) returns (FinishJobResponse);
 

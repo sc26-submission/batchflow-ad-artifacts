@@ -30,7 +30,7 @@ class StorageClass(str, Enum):
     TRANSIENT = "transient"
 
 
-class CacheStatus(str, Enum):
+class PayloadStatus(str, Enum):
     PENDING = "pending"
     AVAILABLE = "available"
     FAILED = "failed"
@@ -141,9 +141,11 @@ class MaterializeBatchTask:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 @dataclass
-class CacheEntry:
+class PayloadEntry:
+    """Coordinator metadata for a materialized payload, transient or reusable."""
+
     cache_key: str
-    status: CacheStatus
+    status: PayloadStatus
     storage_class: StorageClass
     location: str | None = None
     size_bytes: int = 0

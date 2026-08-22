@@ -80,7 +80,7 @@ class CoordinatorGrpcClient:
             timeout=timeout_seconds,
         )
 
-    def poll_materialize_batch_task(
+    def poll_materialization_task(
         self,
         worker_id: str,
         timeout_seconds: float | None = None,
@@ -94,7 +94,7 @@ class CoordinatorGrpcClient:
             timeout=timeout_seconds,
         )
 
-    def complete_materialize_batch_task(
+    def complete_materialization(
         self,
         *,
         task_id: str,
@@ -121,7 +121,7 @@ class CoordinatorGrpcClient:
             timeout=timeout_seconds,
         )
 
-    def fail_materialize_batch_task(
+    def fail_materialization(
         self,
         *,
         task_id: str,
@@ -196,7 +196,7 @@ class CoordinatorGrpcClient:
             timeout=timeout_seconds,
         )
 
-    def commit_batch(
+    def acknowledge_batch(
         self,
         *,
         job_id: str,
@@ -207,6 +207,7 @@ class CoordinatorGrpcClient:
     ) -> batchflow_pb2.CommitBatchResponse:
         stub = self._require_stub()
 
+        # The protobuf method keeps its original wire name for compatibility.
         return stub.CommitBatch(
             batchflow_pb2.CommitBatchRequest(
                 job_id=job_id,
@@ -234,46 +235,4 @@ class CoordinatorGrpcClient:
                 status=status,
             ),
             timeout=timeout_seconds,
-        )
-
-    # Temporary compatibility aliases while old call sites are being removed.
-
-    def poll_materialization_task(
-        self,
-        worker_id: str,
-    ) -> batchflow_pb2.PollMaterializeBatchTaskResponse:
-        return self.poll_materialize_batch_task(worker_id)
-
-    def complete_materialization_task(
-        self,
-        *,
-        task_id: str,
-        worker_id: str,
-        location: str,
-        size_bytes: int,
-        storage_class: int,
-        expires_at_ms: int = 0,
-        metadata: dict[str, Any] | None = None,
-    ) -> batchflow_pb2.CompleteMaterializeBatchTaskResponse:
-        return self.complete_materialize_batch_task(
-            task_id=task_id,
-            worker_id=worker_id,
-            location=location,
-            size_bytes=size_bytes,
-            storage_class=storage_class,
-            expires_at_ms=expires_at_ms,
-            metadata=metadata,
-        )
-
-    def fail_materialization_task(
-        self,
-        *,
-        task_id: str,
-        worker_id: str,
-        reason: str,
-    ) -> batchflow_pb2.FailMaterializeBatchTaskResponse:
-        return self.fail_materialize_batch_task(
-            task_id=task_id,
-            worker_id=worker_id,
-            reason=reason,
         )

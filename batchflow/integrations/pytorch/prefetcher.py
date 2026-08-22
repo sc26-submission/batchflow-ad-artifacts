@@ -106,9 +106,9 @@ class MultiThreadBatchFlowPrefetcher:
             name="batchflow-pytorch-coordinator",
             daemon=True,
         )
-        self._commit_thread = threading.Thread(
-            target=self._ordered_commit_loop,
-            name="batchflow-pytorch-commit",
+        self._publish_thread = threading.Thread(
+            target=self._ordered_publish_loop,
+            name="batchflow-pytorch-publish",
             daemon=True,
         )
         self._fetch_threads = [
@@ -128,7 +128,7 @@ class MultiThreadBatchFlowPrefetcher:
         self._end_sent = False
 
         self._scheduled_batches = 0
-        self._committed_batches = 0
+        self._published_batches = 0
         self._produced_batches = 0
 
         self._last_status_log_time = time.time()
@@ -137,7 +137,7 @@ class MultiThreadBatchFlowPrefetcher:
         for thread in self._fetch_threads:
             thread.start()
 
-        self._commit_thread.start()
+        self._publish_thread.start()
         self._coordinator_thread.start()
 
     def shutdown(self) -> None:
@@ -158,7 +158,7 @@ class MultiThreadBatchFlowPrefetcher:
             thread.join(timeout=5.0)
 
         self._put_fetched_sentinel()
-        self._commit_thread.join(timeout=5.0)
+        self._publish_thread.join(timeout=5.0)
 
     def close_job(self) -> None:
         try:
@@ -489,9 +489,9 @@ class MultiThreadBatchFlowPrefetcher:
             pin_time_sec=float(pin_time_sec),
         )
 
-    def _ordered_commit_loop(self) -> None:
+    def _ordered_publish_loop(self) -> None:
         coordinator_client = CoordinatorGrpcClient(self.config.coordinator_address)
-        next_sequence_to_commit = 0
+        next_sequence_to_publish = 0
         buffered: dict[int, FetchedTaskResult] = {}
 
         try:
@@ -518,29 +518,29 @@ class MultiThreadBatchFlowPrefetcher:
                 buffered[item.task.sequence] = item
                 self.fetched_queue.task_done()
 
-                while next_sequence_to_commit in buffered:
-                    result = buffered.pop(next_sequence_to_commit)
-                    self._commit_and_publish(coordinator_client, result)
-                    next_sequence_to_commit += 1
+                while next_sequence_to_publish in buffered:
+                    result = buffered.pop(next_sequence_to_publish)
+                    self._acknowledge_and_publish(coordinator_client, result)
+                    next_sequence_to_publish += 1
 
                 self._maybe_send_end()
 
         except BaseException as exc:
             if not self._stop_event.is_set():
-                LOGGER.exception("BatchFlow torch ordered commit loop failed")
+                LOGGER.exception("BatchFlow torch ordered publish loop failed")
                 self._put_ready_item(ErrorItem(error=exc))
                 self._stop_event.set()
         finally:
             coordinator_client.close()
 
-    def _commit_and_publish(
+    def _acknowledge_and_publish(
         self,
         coordinator_client: CoordinatorGrpcClient,
         result: FetchedTaskResult,
     ) -> None:
         task = result.task
 
-        coordinator_client.commit_batch(
+        coordinator_client.acknowledge_batch(
             job_id=task.job_id,
             batch_id=task.batch_id,
             epoch=task.epoch,
@@ -582,7 +582,7 @@ class MultiThreadBatchFlowPrefetcher:
 
         self._put_ready_item(BatchItem(batch=batch))
 
-        self._committed_batches += 1
+        self._published_batches += 1
         self._produced_batches += 1
 
         if (
@@ -611,10 +611,10 @@ class MultiThreadBatchFlowPrefetcher:
             )
 
         LOGGER.info(
-            "BatchFlow torch prefetch status scheduled=%s committed=%s "
+            "BatchFlow torch prefetch status scheduled=%s published=%s "
             "ready_queue=%s/%s task_queue=%s/%s fetched_queue=%s/%s%s",
             self._scheduled_batches,
-            self._committed_batches,
+            self._published_batches,
             self.ready_queue.qsize(),
             self.ready_queue.maxsize,
             self.task_queue.qsize(),
@@ -675,7 +675,7 @@ class MultiThreadBatchFlowPrefetcher:
         if not self.fetched_queue.empty():
             return
 
-        if self._committed_batches < self._scheduled_batches:
+        if self._published_batches < self._scheduled_batches:
             return
 
         self._end_sent = True

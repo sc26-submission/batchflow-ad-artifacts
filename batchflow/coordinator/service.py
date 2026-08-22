@@ -10,8 +10,8 @@ from batchflow.common.core import (
     Batch,
     BatchHandle,
     BatchHandleStatus,
-    CacheEntry,
-    CacheStatus,
+    PayloadEntry,
+    PayloadStatus,
     Dataset,
     Job,
     JobStatus,
@@ -21,6 +21,7 @@ from batchflow.common.core import (
 )
 from batchflow.config.config_types import CoordinatorConfig, RedisConfig
 from batchflow.coordinator.batch_coordinator import BatchCoordinator
+from batchflow.coordinator.cache_manager import ReusableCacheManager
 from batchflow.coordinator.scheduler import BatchflowScheduler
 from batchflow.coordinator.store import CoordinatorStore, MaterializeBatchTaskState
 
@@ -60,6 +61,8 @@ class FinishJobResult:
 
 
 class CoordinatorService:
+    """Coordinates trainer/worker APIs and delegates scheduling/cache policy."""
+
     def __init__(
         self,
         *,
@@ -84,7 +87,16 @@ class CoordinatorService:
                 key_prefix=redis_config.key_prefix,
             )
 
-        self._cache_management_lock = threading.RLock()
+        self.reusable_cache = (
+            ReusableCacheManager(
+                store=self.store,
+                scheduler=self.scheduler,
+                redis_store=self.redis_payload_store,
+            )
+            if self.redis_payload_store is not None
+            else None
+        )
+
         self._maintainer_interval_seconds = maintainer_interval_seconds
         self._wake_event = threading.Event()
         self._stop_event = threading.Event()
@@ -114,6 +126,8 @@ class CoordinatorService:
             self.redis_payload_store.close()
 
         LOGGER.info("Coordinator service stopped")
+
+    # Dataset and trainer lifecycle
 
     def register_dataset(self, dataset: Dataset) -> None:
         self.store.register_dataset(dataset)
@@ -147,8 +161,8 @@ class CoordinatorService:
             job.dataset_id,
             job.lookahead_batches,
         )
-        self._refresh_planned_window_if_needed(job.job_id, force=True)
-        self._maintain_job(job.job_id)
+        self._refresh_job_window(job.job_id, force=True)
+        self._schedule_job_batches(job.job_id)
         self._wake_event.set()
 
         return StartJobResult(
@@ -201,7 +215,7 @@ class CoordinatorService:
         )
 
         if batch is None:
-            self._refresh_planned_window_if_needed(job.job_id, force=True)
+            self._refresh_job_window(job.job_id, force=True)
             batch = self.store.get_batch(
                 job_id=job.job_id,
                 epoch=job.progress.epoch,
@@ -234,8 +248,8 @@ class CoordinatorService:
         self.store.note_batch_handle_served(job_id, handle)
 
         if handle.is_ready:
-            self.store.touch_cache_entry(handle.cache_key)
-            self.store.pin_cache_entry(handle.cache_key, job_id)
+            self.store.touch_payload(handle.cache_key)
+            self.store.pin_payload(handle.cache_key, job_id)
 
             job = self.store.issue_batch_to_job(
                 job_id=job_id,
@@ -253,7 +267,7 @@ class CoordinatorService:
                 )
                 self.store.set_planned_window(job.job_id, [])
 
-            self._refresh_planned_window_if_needed(job.job_id, force=True)
+            self._refresh_job_window(job.job_id, force=True)
 
         self._wake_event.set()
 
@@ -264,7 +278,7 @@ class CoordinatorService:
             metadata={"job_id": job_id},
         )
 
-    def commit_batch(
+    def acknowledge_batch(
         self,
         *,
         job_id: str,
@@ -276,17 +290,17 @@ class CoordinatorService:
 
         if epoch > job.progress.epoch:
             raise ValueError(
-                f"commit epoch is ahead of job progress: "
+                f"acknowledgement epoch is ahead of job progress: "
                 f"job_id={job_id} current={job.progress.epoch} got={epoch}"
             )
 
-        job = self.store.commit_batch(
+        job = self.store.acknowledge_batch(
             job_id=job_id,
             batch_id=batch_id,
             batch_index=batch_index,
         )
 
-        self.store.unpin_cache_entry(batch_id, job_id)
+        self.store.unpin_payload(batch_id, job_id)
         self._wake_event.set()
         return job
 
@@ -299,7 +313,7 @@ class CoordinatorService:
     ) -> FinishJobResult:
         job = self.store.finish_job(job_id, reason=reason, status=status)
 
-        self.store.release_job_cache_pins(job_id)
+        self.store.release_job_payload_pins(job_id)
         self.store.set_planned_window(job_id, [])
         self._wake_event.set()
 
@@ -315,6 +329,8 @@ class CoordinatorService:
             status=job.status,
             reason=job.closed_reason,
         )
+
+    # Worker lifecycle and materialization RPCs
 
     def register_worker(
         self,
@@ -344,7 +360,7 @@ class CoordinatorService:
     def heartbeat_worker(self, worker_id: str):
         return self.store.heartbeat_worker(worker_id)
 
-    def poll_materialize_batch_task(
+    def poll_materialization_task(
         self,
         *,
         worker_id: str,
@@ -367,7 +383,7 @@ class CoordinatorService:
 
         return task_state
 
-    def complete_materialize_batch_task(
+    def complete_materialization(
         self,
         *,
         task_id: str,
@@ -408,30 +424,29 @@ class CoordinatorService:
         final_expires_at_ms = expires_at_ms
         final_metadata = metadata
 
-        is_shared_redis_result = (
+        is_reusable_redis_payload = (
             storage_class == StorageClass.REUSABLE
             and location.startswith(("redis://", "rediss://"))
             and self.redis_payload_store is not None
         )
 
-        if is_shared_redis_result:
-            with self._cache_management_lock:
-                (
-                    final_location,
-                    final_storage_class,
-                    final_expires_at_ms,
-                    final_metadata,
-                ) = self._apply_cache_admission(
-                    batch=batch,
-                    size_bytes=size_bytes,
-                    location=location,
-                    expires_at_ms=expires_at_ms,
-                    metadata=metadata,
-                )
+        if is_reusable_redis_payload:
+            assert self.reusable_cache is not None
+            placement = self.reusable_cache.admit_reusable_payload(
+                batch=batch,
+                size_bytes=size_bytes,
+                location=location,
+                expires_at_ms=expires_at_ms,
+                metadata=metadata,
+            )
+            final_location = placement.location
+            final_storage_class = placement.storage_class
+            final_expires_at_ms = placement.expires_at_ms
+            final_metadata = placement.metadata
 
-        entry = CacheEntry(
+        entry = PayloadEntry(
             cache_key=batch.cache_key,
-            status=CacheStatus.AVAILABLE,
+            status=PayloadStatus.AVAILABLE,
             storage_class=final_storage_class,
             location=final_location,
             size_bytes=size_bytes,
@@ -451,7 +466,7 @@ class CoordinatorService:
         handle = self.scheduler.build_ready_handle(batch=batch, entry=entry, store=self.store)
         task_state = self.store.complete_task(
             task_id,
-            cache_entry=entry,
+            payload_entry=entry,
             batch_handle=handle,
         )
 
@@ -466,103 +481,7 @@ class CoordinatorService:
         self._wake_event.set()
         return task_state
 
-    def _apply_cache_admission(
-        self,
-        *,
-        batch: Batch,
-        size_bytes: int,
-        location: str,
-        expires_at_ms: int | None,
-        metadata: dict[str, Any],
-    ) -> tuple[str, StorageClass, int | None, dict[str, Any]]:
-        assert self.redis_payload_store is not None
-
-        metadata = dict(metadata)
-        incoming_value = self.scheduler.compute_batch_value(batch, self.store)
-        metadata["batch_value"] = f"{incoming_value:.12g}"
-
-        victims = self.scheduler.choose_cache_evictions(
-            incoming_batch=batch,
-            incoming_size_bytes=size_bytes,
-            store=self.store,
-        )
-
-        capacity = int(self.scheduler.config.cache_capacity_bytes)
-
-        if victims is not None:
-            for victim in victims:
-                evicted = self.store.evict_batch(victim.cache_key)
-                if evicted is None:
-                    continue
-
-                redis_key = str(evicted.metadata.get("fetch_key", ""))
-                if redis_key:
-                    try:
-                        self.redis_payload_store.remove_concrete_key(key=redis_key)
-                    except Exception:
-                        LOGGER.exception(
-                            "Failed to delete evicted Redis payload cache_key=%s key=%s",
-                            evicted.cache_key,
-                            redis_key,
-                        )
-
-                LOGGER.info(
-                    "Evicted reusable cache entry cache_key=%s size_bytes=%s value=%.6f",
-                    evicted.cache_key,
-                    evicted.size_bytes,
-                    self.scheduler.compute_cache_entry_value(evicted, self.store),
-                )
-
-            if capacity <= 0 or self.store.reusable_cache_bytes() + int(size_bytes) <= capacity:
-                metadata["cache_admission"] = "admitted"
-                return location, StorageClass.REUSABLE, expires_at_ms, metadata
-
-        redis_key = str(metadata.get("fetch_key", ""))
-        if redis_key:
-            try:
-                self.redis_payload_store.remove_concrete_key(key=redis_key)
-            except Exception:
-                LOGGER.exception(
-                    "Failed to delete rejected Redis payload batch_id=%s key=%s",
-                    batch.batch_id,
-                    redis_key,
-                )
-
-        fallback_host = str(metadata.get("fallback_fetch_host", ""))
-        fallback_port = _safe_int(metadata.get("fallback_fetch_port"), default=0)
-        fallback_key = str(metadata.get("fallback_fetch_key", ""))
-        fallback_expires_at_ms = _safe_int(
-            metadata.get("fallback_expires_at_ms"),
-            default=0,
-        )
-
-        if not fallback_host or fallback_port <= 0 or not fallback_key:
-            LOGGER.warning(
-                "Cannot reject Redis cache admission because worker fallback "
-                "metadata is missing batch_id=%s; retaining object",
-                batch.batch_id,
-            )
-            metadata["cache_admission"] = "forced_no_fallback"
-            return location, StorageClass.REUSABLE, expires_at_ms, metadata
-
-        fallback_metadata = dict(metadata)
-        fallback_metadata.update(
-            {
-                "fetch_host": fallback_host,
-                "fetch_port": str(fallback_port),
-                "fetch_key": fallback_key,
-                "cache_admission": "rejected",
-            }
-        )
-
-        return (
-            f"grpc://{fallback_host}:{fallback_port}",
-            StorageClass.TRANSIENT,
-            fallback_expires_at_ms or None,
-            fallback_metadata,
-        )
-
-    def fail_materialize_batch_task(
+    def fail_materialization(
         self,
         *,
         task_id: str,
@@ -573,13 +492,15 @@ class CoordinatorService:
         self._wake_event.set()
         return task_state
 
+    # Background scheduling and metadata maintenance
+
     def _maintainer_loop(self) -> None:
         while not self._stop_event.is_set():
-            did_work = self._cleanup_expired_cache_entries()
+            did_work = self._cleanup_expired_payload_metadata()
 
             for job in self.store.list_active_jobs():
                 try:
-                    if self._maintain_job(job.job_id):
+                    if self._schedule_job_batches(job.job_id):
                         did_work = True
                 except Exception:
                     LOGGER.exception(
@@ -599,32 +520,32 @@ class CoordinatorService:
             self._wake_event.wait(timeout=self._maintainer_interval_seconds)
             self._wake_event.clear()
 
-    def _cleanup_expired_cache_entries(self) -> bool:
+    def _cleanup_expired_payload_metadata(self) -> bool:
         current_ms = now_ms()
         removed_count = 0
 
-        for entry in self.store.list_cache_entries():
+        for entry in self.store.list_payload_entries():
             if not entry.is_expired(current_ms):
                 continue
-            if self.store.cache_pin_count(entry.cache_key) > 0:
+            if self.store.payload_pin_count(entry.cache_key) > 0:
                 continue
 
-            if self.store.evict_batch(entry.cache_key) is not None:
+            if self.store.remove_payload(entry.cache_key) is not None:
                 removed_count += 1
 
-        # if removed_count:
-        #     LOGGER.info("Expired cache entries removed | removed count=%s", removed_count)
+        if removed_count:
+            LOGGER.debug("Expired payload metadata removed | count=%s", removed_count)
 
         return removed_count > 0
 
-    def _maintain_job(self, job_id: str) -> bool:
+    def _schedule_job_batches(self, job_id: str) -> bool:
         job = self.store.get_job(job_id)
 
         if job.status != JobStatus.ACTIVE:
             self.store.set_planned_window(job_id, [])
             return False
 
-        self._refresh_planned_window_if_needed(job_id)
+        self._refresh_job_window(job_id)
         planned = self.store.get_planned_window(job_id)
 
         if not planned:
@@ -702,13 +623,12 @@ class CoordinatorService:
         for job in active_jobs:
             target_depth = self.scheduler.target_lookahead_depth(job, self.store)
             extended_depth = max(target_depth, multiplier * target_depth)
-            upcoming = self.store.next_uncommitted_batches(job.job_id)
+            upcoming = self.store.upcoming_batches(job.job_id)
 
             for batch in upcoming[target_depth:extended_depth]:
-                if not self.scheduler.can_opportunistically_prefetch(
-                    batch,
-                    store=self.store,
-                ):
+                if not self.scheduler.can_opportunistically_prefetch(batch, store=self.store):
+                    continue
+                if self.reusable_cache is None or not self.reusable_cache.can_admit_estimated_payload(batch):
                     continue
 
                 if batch.cache_key in candidates_by_cache_key:
@@ -735,10 +655,9 @@ class CoordinatorService:
             if scheduled >= spare_slots:
                 break
 
-            if not self.scheduler.can_opportunistically_prefetch(
-                batch,
-                store=self.store,
-            ):
+            if not self.scheduler.can_opportunistically_prefetch(batch, store=self.store):
+                continue
+            if self.reusable_cache is None or not self.reusable_cache.can_admit_estimated_payload(batch):
                 continue
 
             task = self.scheduler.build_opportunistic_task(batch, store=self.store)
@@ -768,7 +687,7 @@ class CoordinatorService:
 
         return scheduled > 0
 
-    def _refresh_planned_window_if_needed(
+    def _refresh_job_window(
         self,
         job_id: str,
         *,
@@ -806,12 +725,3 @@ class CoordinatorService:
 
         self.store.set_planned_window(job_id, new_batches)
 
-
-def _safe_int(value: object, *, default: int) -> int:
-    if value in (None, ""):
-        return default
-
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
